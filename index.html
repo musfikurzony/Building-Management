@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Building Portal</title>
+<meta name="theme-color" content="#12332a">
+<meta name="description" content="Building Management &amp; Finance Portal">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="assets/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="assets/icon-192.png">
+<link rel="stylesheet" href="assets/app.css">
+</head>
+<body>
+
+<div id="boot" class="boot">
+  <div class="boot-mark">Building Portal</div>
+  <div class="spinner" aria-hidden="true"></div>
+  <p id="bootMsg">Connecting&hellip;</p>
+</div>
+
+<div id="app" hidden>
+  <header class="topbar">
+    <button id="navToggle" class="icon-btn only-mobile" aria-label="Menu" aria-expanded="false">
+      <span class="burger"></span>
+    </button>
+    <div class="brand">
+      <span class="brand-name" id="brandName">Building Portal</span>
+      <span class="brand-sub" id="brandSub"></span>
+    </div>
+    <div class="topbar-right">
+      <button id="langBtn" class="pill-btn" title="Switch language">বাংলা</button>
+      <div class="usermenu">
+        <button id="bellBtn" class="icon-btn" aria-haspopup="true" aria-expanded="false" aria-label="Notifications">
+          <span aria-hidden="true">🔔</span>
+          <span id="bellCount" class="bell-count" hidden>0</span>
+        </button>
+        <div id="bellPanel" class="popover" hidden>
+          <div class="popover-head"><b>Notifications</b></div>
+          <div id="bellList"></div>
+          <button class="popover-item" data-act="readall">Mark all as read</button>
+        </div>
+      </div>
+      <div class="usermenu">
+        <button id="userBtn" class="avatar" aria-haspopup="true" aria-expanded="false"><span id="userInitials">?</span></button>
+        <div id="userPanel" class="popover" hidden>
+          <div class="popover-head">
+            <b id="userName"></b>
+            <span id="userEmail" class="muted"></span>
+            <span id="userRoles" class="chips"></span>
+          </div>
+          <button class="popover-item" data-act="profile">My details</button>
+          <button class="popover-item danger" data-act="signout">Sign out</button>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <div class="layout">
+    <nav id="sidenav" class="sidenav" aria-label="Modules"></nav>
+    <div id="navScrim" class="scrim" hidden></div>
+    <main id="view" class="view" tabindex="-1"></main>
+  </div>
+
+  <nav id="tabbar" class="tabbar only-mobile" aria-label="Quick access"></nav>
+
+  <footer class="credit">Developed by Musfikur Rahman | Copyright &copy; <span id="year"></span></footer>
+</div>
+
+<div id="toasts" class="toasts" aria-live="polite"></div>
+<div id="modalHost"></div>
+
+<!-- The Supabase client is vendored, not loaded from a CDN: a financial
+     system should not depend on a third party being up, and should not
+     silently accept whatever code that third party serves tomorrow. -->
+<script src="vendor/supabase.js"></script>
+<script src="config.js"></script>
+<script type="module" src="core/app.js"></script>
+</body>
+</html>

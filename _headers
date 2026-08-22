@@ -1,0 +1,39 @@
+# Response headers, applied by Cloudflare (Workers Static Assets and Pages
+# both read this file). It is never itself served.
+#
+# This is a financial application for a residential building. The rules
+# that protect the money live in PostgreSQL, and nothing here replaces
+# them — these headers close off the browser-side attacks that a database
+# cannot see: putting the portal in an invisible iframe over a different
+# page, loading a script from somewhere else, or leaking the address of
+# the site to a third party.
+#
+# IF YOU EVER CHANGE SUPABASE PROJECTS, the two supabase.co hosts in
+# Content-Security-Policy below must change too, or the app will load and
+# then fail to reach the database. They are the only place outside
+# config.js that names the project.
+
+/*
+  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://ebjkajgaardrlretiifk.supabase.co; font-src 'self'; connect-src 'self' https://ebjkajgaardrlretiifk.supabase.co wss://ebjkajgaardrlretiifk.supabase.co; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'
+  X-Frame-Options: DENY
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: no-referrer
+  Permissions-Policy: geolocation=(), microphone=(), payment=(), usb=(), camera=(self)
+  Strict-Transport-Security: max-age=31536000; includeSubDomains
+  Cross-Origin-Opener-Policy: same-origin
+
+# config.js carries the project URL and key. Kept out of the edge cache so
+# that rotating the key and redeploying takes effect on the next load
+# rather than whenever a cached copy happens to expire.
+/config.js
+  Cache-Control: no-cache, must-revalidate
+
+# The service worker decides for itself when the app updates; a cached
+# copy of the worker is how a deploy fails to reach anybody.
+/service-worker.js
+  Cache-Control: no-cache, must-revalidate
+
+# index.html is fetched network-first by the service worker, so it must
+# not be held at the edge either.
+/index.html
+  Cache-Control: no-cache, must-revalidate

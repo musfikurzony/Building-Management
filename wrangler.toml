@@ -1,0 +1,12 @@
+# Cloudflare Workers static assets.
+# No Worker script, no server-side code, no build step: the repository
+# root is served exactly as it sits, minus what .assetsignore excludes.
+#
+# Every rule that matters (permissions, approvals, immutability) runs
+# inside PostgreSQL, so there is nothing here that needs a server.
+
+name = "building-portal"
+compatibility_date = "2026-08-21"
+
+[assets]
+directory = "."
