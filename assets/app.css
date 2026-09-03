@@ -341,3 +341,34 @@ tfoot td{font-weight:700;background:var(--surface-2);border-top:2px solid var(--
 #bellPanel .popover-item{display:block;text-decoration:none;white-space:normal;line-height:1.35}
 #bellPanel .popover-item.unread{background:var(--accent-soft)}
 #bellPanel .popover-item b{display:block;font-size:.85rem}
+
+/* ---------- report letterhead (screen + print) ---------- */
+.letterhead{display:none}
+.letterhead .lh-name{font-size:1.35rem;font-weight:700;letter-spacing:-.01em;margin:0}
+.letterhead .lh-addr{color:var(--ink-2);font-size:.85rem;margin:.15rem 0 0}
+.letterhead .lh-rule{border:0;border-top:2px solid var(--accent);margin:.6rem 0 .5rem}
+.letterhead .lh-title{font-size:1.05rem;font-weight:700;margin:0}
+.letterhead .lh-meta{display:flex;justify-content:space-between;gap:1rem;
+  font-size:.8rem;color:var(--muted);margin-top:.2rem}
+
+@media print{
+  /* The letterhead exists only on paper: on screen the page already has
+     a heading and the building name sits in the top bar. */
+  .letterhead{display:block;margin-bottom:.8rem}
+  .page-head,.alert,.bar,.badge.b-draft{display:none !important}
+  .grid.g-stats{display:grid !important;grid-template-columns:repeat(4,1fr);gap:.4rem}
+  .stat{border:1px solid #ccc;padding:.4rem .5rem;break-inside:avoid}
+  .stat .value{font-size:1rem}
+  table{font-size:10pt;width:100%;border-collapse:collapse}
+  th{background:#12332a !important;color:#fff !important;
+     -webkit-print-color-adjust:exact;print-color-adjust:exact}
+  th,td{border:1px solid #bbb;padding:3px 5px}
+  tfoot td{font-weight:700;background:#f0f0f0 !important;
+     -webkit-print-color-adjust:exact;print-color-adjust:exact}
+  thead{display:table-header-group}      /* repeat headings on every page */
+  tr{break-inside:avoid}
+  section.card{break-inside:auto;margin-bottom:.6rem}
+  h2{font-size:1rem;margin:.7rem 0 .3rem;break-after:avoid}
+  .tablewrap{overflow:visible !important}
+  @page{size:A4;margin:14mm 12mm 16mm}
+}
