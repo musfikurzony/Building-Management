@@ -37,8 +37,22 @@ export function friendly(e){
   if (/violates check constraint "txn_transfer_ck"/i.test(m)) return 'A transfer needs two different accounts.';
   if (/violates not-null/i.test(m))         return 'A required field is missing.';
   if (/Failed to fetch|NetworkError/i.test(m)) return 'No connection. Check your internet and try again.';
+  // Every table lives in `bms`, and Supabase will not serve a schema that
+  // is not on its exposed list. Without this case the app looks like a
+  // permissions problem — the screens render, but every query returns
+  // nothing — and the setting that actually needs changing is in the
+  // dashboard, not the database.
+  if (/invalid schema|PGRST106|schema must be one of/i.test(m))
+    return 'The database is not published to the API yet. In Supabase open '
+         + 'Project Settings → API → Exposed schemas and add "bms", then reload this page.';
   return m;
 }
+
+/** True when the failure is "the bms schema is not exposed", which is a
+    project setting rather than anything wrong with the data or the user. */
+export const isSchemaNotExposed = (e) =>
+  /invalid schema|PGRST106|schema must be one of/i.test(
+    (e && (e.message || e.error_description || e.hint)) || '');
 
 function fail(e, silent){
   const msg = friendly(e);

@@ -265,4 +265,25 @@ export function downloadCSV(filename, cols, rows){
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+/**
+ * The block that turns a screen into a document when it is printed.
+ *
+ * Hidden on screen — the page already has a heading and the building name
+ * is in the top bar — and revealed by the print stylesheet, so a saved PDF
+ * carries the building's name, address, what the report is, the period it
+ * covers, and when it was produced. Without the period and the date, a
+ * printed statement is unfalsifiable: nobody looking at it later can tell
+ * what it was meant to show.
+ */
+export function letterhead({ name, address, title, period, extra } = {}){
+  return el('div', { class:'letterhead' },
+    el('p', { class:'lh-name', text: name || 'Building' }),
+    address ? el('p', { class:'lh-addr', text: address }) : null,
+    el('hr', { class:'lh-rule' }),
+    el('p', { class:'lh-title', text: title || 'Report' }),
+    el('div', { class:'lh-meta' },
+      el('span', { text: period || '' }),
+      el('span', { text: extra || ('Produced ' + fdatetime(new Date().toISOString())) })));
+}
+
 export function spinner(){ return el('div', { class:'center' }, el('div', { class:'spinner', style:'margin:2rem auto' })); }

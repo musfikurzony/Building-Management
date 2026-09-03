@@ -88,6 +88,29 @@ function authScreen(){
       form));
 }
 
+/* Shown when the PROJECT is misconfigured rather than the account. The
+   distinction matters: "waiting for an administrator" tells the reader to
+   go and find a person, when what is actually needed is a setting they
+   themselves can change in thirty seconds. */
+function setupScreen(){
+  return el('div', { class:'auth' },
+    el('div', { class:'auth-card center' },
+      el('div', { class:'auth-mark' }, el('div', { class:'dot', text:'⚙' })),
+      el('h1', { style:'font-size:1.1rem', text:'One setup step is missing' }),
+      el('p', { class:'muted', text: state.setupError ||
+        'The database cannot be reached through the API.' }),
+      el('p', { class:'hint', text:
+        'The portal keeps all of its tables in a schema called "bms". Supabase '
+        + 'only serves schemas that appear on its exposed list, and "bms" is not '
+        + 'on it yet, so every query is being refused before it reaches the data. '
+        + 'Nothing is wrong with your account or your database.' }),
+      el('div', { class:'btn-row', style:'justify-content:center' },
+        el('button', { class:'btn primary', text:'I have done it — retry',
+          onclick: async () => { await loadProfile(); renderShell(); } }),
+        el('button', { class:'btn danger', text:'Sign out',
+          onclick: async () => { await signOut(); renderShell(); } }))));
+}
+
 function pendingScreen(){
   return el('div', { class:'auth' },
     el('div', { class:'auth-card center' },
@@ -332,6 +355,7 @@ function renderShell(){
 
   if (state.status === 'unconfigured'){ view.replaceChildren(unconfiguredScreen()); chromeVisible(false); return; }
   if (state.status === 'signedout')   { view.replaceChildren(authScreen());        chromeVisible(false); return; }
+  if (state.status === 'setup')       { view.replaceChildren(setupScreen());       chromeVisible(false); return; }
   if (state.status === 'pending')     { view.replaceChildren(pendingScreen());     chromeVisible(false); return; }
 
   chromeVisible(true);
@@ -356,6 +380,13 @@ async function route(){
 }
 
 window.addEventListener('hashchange', route);
+
+// The building name and currency live in the top bar, which is painted
+// once per shell render. A settings save has to repaint it, or the header
+// keeps showing the old name until the next sign-in.
+window.addEventListener('bms:settings-changed', () => {
+  if (state.status === 'ready') paintIdentity();
+});
 
 (async function main(){
   try {

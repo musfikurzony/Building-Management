@@ -7,7 +7,7 @@
    functions, where the browser cannot reach it.
    ===================================================================== */
 
-import { sb, q, rpc, insert } from './db.js';
+import { sb, q, rpc, insert, friendly, isSchemaNotExposed } from './db.js';
 import { setCurrency } from './ui.js';
 
 export const state = {
@@ -20,7 +20,8 @@ export const state = {
   settings: null,
   modules: [],
   ref: {},          // departments, categories, accounts, flats…
-  status: 'loading' // loading | signedout | pending | ready | unconfigured
+  setupError: null, // set when the project itself is misconfigured
+  status: 'loading' // loading | signedout | pending | setup | ready | unconfigured
 };
 
 export function can(module, action){
@@ -44,7 +45,22 @@ export async function loadSession(){
 export async function loadProfile(){
   const uid = state.user.id;
 
-  let rows = await q('user_profiles', b => b.eq('user_id', uid), { silent:true }).catch(() => []);
+  // A failure here is not the same as "no profile". If the bms schema is
+  // not exposed to the API, EVERY query fails, and reporting that as
+  // "waiting for an administrator" sends the reader to fix the wrong
+  // thing — there is no administrator who can help, because nobody can
+  // read anything.
+  let rows = [];
+  try {
+    rows = await q('user_profiles', b => b.eq('user_id', uid), { silent:true });
+  } catch (e){
+    if (isSchemaNotExposed(e.original || e)){
+      state.status = 'setup';
+      state.setupError = friendly(e.original || e);
+      return state;
+    }
+    rows = [];
+  }
   let profile = rows[0];
 
   if (!profile){
@@ -112,6 +128,20 @@ export async function ref(name, force = false){
   if (!loaders[name]) throw new Error('Unknown reference list: ' + name);
   state.ref[name] = await loaders[name]().catch(() => []);
   return state.ref[name];
+}
+
+/** Re-read the building settings from the database and tell the shell.
+    state.settings is loaded once at sign-in, so without this a save writes
+    the right value and then the screen re-renders from the old cached copy
+    — which is indistinguishable from the save having failed. */
+export async function reloadSettings(){
+  const rows = await q('building_settings', b => b, { silent:true }).catch(() => []);
+  if (rows[0]){
+    state.settings = rows[0];
+    setCurrency(state.settings.currency_symbol);
+    window.dispatchEvent(new CustomEvent('bms:settings-changed'));
+  }
+  return state.settings;
 }
 
 export function invalidate(...names){
