@@ -3,9 +3,32 @@
    report and the dashboard can never disagree. */
 
 import { el, field, select, money, money0, num, fdate, table, stat, emptyState,
-         downloadCSV, todayISO, monthName } from '../core/ui.js';
+         downloadCSV, todayISO, monthName, letterhead } from '../core/ui.js';
 import { q, logEvent } from '../core/db.js';
+import { downloadXLSX } from '../core/xlsx.js';
 import { can, ref, settings } from '../core/store.js';
+
+/* The two buttons every report carries. Kept here so the date-range
+   statement and the annual summary cannot drift apart. */
+function exportBar({ filename, sheets, module = 'reports', detail }){
+  const bar = el('span', {});
+  if (!can('reports','export')) return bar;
+  bar.append(el('button', { class:'btn small', onclick: () => {
+    downloadXLSX(filename, sheets());
+    logEvent('EXPORT', { module, detail: (detail || filename) + ' (xlsx)' });
+  }}, 'Export Excel'));
+  bar.append(el('button', { class:'btn small', onclick: () => {
+    logEvent('REPORT_VIEW', { module, detail: (detail || filename) + ' (printed)' });
+    window.print();
+  }}, 'Print / PDF'));
+  return bar;
+}
+
+/** Building name and address for the printed letterhead. */
+const head = (title, period) => {
+  const s = settings();
+  return letterhead({ name: s.building_name, address: s.address, title, period });
+};
 
 const now = new Date();
 
@@ -96,7 +119,41 @@ async function statement(){
       { label:'Amount', cls:'num', fmt: r => money(r.amount, { bare:true }), csv: r => r.amount }
     ];
 
+    const period = `${fdate(fromI.value)} to ${fdate(toI.value)}`;
     const out = el('div', {});
+    out.append(head('Income & expenditure statement', period));
+    out.append(el('div', { class:'toolbar' }, exportBar({
+      filename: `statement-${fromI.value}-to-${toI.value}.xlsx`,
+      detail: `statement ${fromI.value}..${toI.value}`,
+      sheets: () => [
+        { name:'Summary', title: settings().building_name || 'Building',
+          subtitle: `Income & expenditure — ${period}`,
+          columns:[{ label:'Figure', key:'k', width:32 }, { label:'Amount', key:'v', money:true }],
+          rows:[
+            { k:'Total income',  v: sum(income) },
+            { k:'Total expense', v: sum(expense) },
+            { k: net >= 0 ? 'Net surplus' : 'Net deficit', v: Math.abs(net) },
+            { k:'Entries counted', v: real.length }
+          ] },
+        { name:'Income by department',
+          columns:[{ label:'Department', key:'name', width:30 }, { label:'Amount', key:'amount', money:true }],
+          rows: incomeRows, total:{ amount: sum(income) } },
+        { name:'Expense by department',
+          columns:[{ label:'Department', key:'name', width:30 }, { label:'Amount', key:'amount', money:true }],
+          rows: expenseRows, total:{ amount: sum(expense) } },
+        { name:'All entries',
+          columns:[
+            { label:'Date', key:'txn_date', width:13 },
+            { label:'Number', key:'txn_no', width:16 },
+            { label:'Description', key:'description', width:40 },
+            { label:'Department', key:'department_name', width:20 },
+            { label:'Category', key:'category_name', width:24 },
+            { label:'Vendor', key:'vendor_name', width:22 },
+            { label:'Direction', key:'direction', width:12 },
+            { label:'Amount', key:'amount', money:true }
+          ],
+          rows: filtered() }
+      ]})));
     out.append(el('div', { class:'grid g-stats' },
       stat('Total income',  money0(sum(income))),
       stat('Total expense', money0(sum(expense))),
@@ -239,6 +296,40 @@ async function annual(){
     ];
 
     const out = el('div', {});
+    out.append(head('Annual financial summary', `Year ${year}`));
+    out.append(el('div', { class:'toolbar' }, exportBar({
+      filename: `annual-${year}.xlsx`,
+      detail: `annual ${year}`,
+      sheets: () => {
+        const pos = position[0];
+        return [
+          { name:'Month by month', title: settings().building_name || 'Building',
+            subtitle: `Annual financial summary — ${year}`,
+            columns:[
+              { label:'Month', key:'label', width:16 },
+              { label:'Income', key:'income', money:true },
+              { label:'Expense', key:'expense', money:true },
+              { label:'Surplus / deficit', key:'net', money:true },
+              { label:'Running total', key:'cumulative', money:true }
+            ],
+            rows: months,
+            total:{ income: totalIn, expense: totalOut, net: totalIn - totalOut } },
+          { name:'By department',
+            columns:[{ label:'Department', key:'name', width:30 }, { label:'Spent', key:'amount', money:true }],
+            rows: deptRows, total:{ amount: totalOut } },
+          pos ? { name:'Position',
+            columns:[{ label:'Figure', key:'k', width:34 }, { label:'Amount', key:'v', money:true }],
+            rows:[
+              { k:'Cash in hand', v:Number(pos.cash_in_hand) },
+              { k:'In the bank', v:Number(pos.bank_balance) },
+              { k:'Fixed deposits', v:Number(pos.fixed_deposits) },
+              { k:'Total held', v:Number(pos.total_held) },
+              { k:'Service charge owed to us', v:Number(pos.service_charge_receivable) },
+              { k:'Paid in advance by flats', v:Number(pos.advances_held) },
+              { k:'Salaries generated, unpaid', v:Number(pos.salary_due) }
+            ] } : null
+        ].filter(Boolean);
+      }})));
     out.append(el('div', { class:'grid g-stats' },
       stat('Income for the year', money0(totalIn)),
       stat('Expense for the year', money0(totalOut)),

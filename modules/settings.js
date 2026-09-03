@@ -6,7 +6,7 @@ import { el, field, select, money, ok, err, table, badge, monthName,
          confirmBox, reasonBox, emptyState } from '../core/ui.js';
 import { q, update, rpc } from '../core/db.js';
 import { refresh } from '../core/router.js';
-import { can, ref, state, settings, invalidate } from '../core/store.js';
+import { can, ref, state, settings, invalidate, reloadSettings } from '../core/store.js';
 
 export async function render(){
   const s = settings();
@@ -97,6 +97,10 @@ export async function render(){
           default_cash_account_id: cashSel.value || null,
           allow_self_approval: selfApp.checked
         }, 'id');
+        // Re-read before re-rendering: this screen draws itself from the
+        // cached settings, so refreshing without reloading would show the
+        // old values back and look like the save failed.
+        await reloadSettings();
         ok('Saved'); refresh();
       } catch { save.disabled = false; }
     };
