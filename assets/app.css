@@ -32,7 +32,7 @@
 }
 @media (prefers-color-scheme:dark){
   :root{
-    --ink:#e2eae6; --ink-2:#b7c5bf; --muted:#8798921; --muted:#879992;
+    --ink:#e2eae6; --ink-2:#b7c5bf; --muted:#879992;
     --paper:#0d1512; --surface:#16211d; --surface-2:#1e2b26;
     --line:#2b3a34; --line-soft:#223029;
     --brand:#0b1f19; --accent:#3fb289; --accent-ink:#06211a;
@@ -115,7 +115,7 @@ a{color:var(--accent)}
 
 /* ---------- layout ---------- */
 .layout{display:flex;min-height:calc(100dvh - 52px)}
-@media (min-width:861px){ .layout{background:linear-gradient(to right,var(--surface) 0 230px,transparent 230px)} }
+html:not(.is-narrow) .layout{background:linear-gradient(to right,var(--surface) 0 230px,transparent 230px)}
 .sidenav{
   width:230px;flex:0 0 230px;background:var(--surface);border-right:1px solid var(--line);
   padding:.6rem .5rem 2rem;overflow-y:auto;
@@ -150,19 +150,53 @@ a{color:var(--accent)}
   border-top:1px solid var(--line-soft);
 }
 
-@media (max-width:860px){
-  .only-mobile{display:flex}
-  .sidenav{
-    position:fixed;top:0;left:0;height:100dvh;z-index:50;
-    transform:translateX(-100%);transition:transform .18s ease;
-    padding-top:max(1rem,env(safe-area-inset-top));
-  }
-  .sidenav.open{transform:none;box-shadow:var(--shadow-2)}
-  .view{padding:.75rem;padding-bottom:6.5rem}
-  .credit{padding-bottom:5rem}
+/* The one card in the application that destroys data. It is coloured
+   like a warning because it is one. */
+.danger-zone{border-color:var(--red);border-width:1px}
+.danger-zone .card-head h2{color:var(--red)}
+.danger-zone h3{font-size:.9rem;margin:.2rem 0 .4rem}
+ul.tick{margin:.2rem 0 .6rem;padding-left:1.1rem;font-size:.85rem;color:var(--ink-2)}
+ul.tick li{margin:.15rem 0}
+
+/* ---------------------------------------------------------------------
+   The narrow / wide switch.
+
+   This used to be `@media (max-width:860px)`. It is now a class that
+   JavaScript puts on <html>, because a media query answers "how wide is
+   the viewport", and the question that actually matters is "is this a
+   phone in someone's hand". Those come apart in one common case: Chrome
+   on Android with "Desktop site" ticked reports a ~980px viewport on a
+   360px screen, every width query goes false, and the phone gets the
+   laptop layout and has to be pinch-zoomed. Owning the switch in JS
+   means the physical screen and an explicit user choice can decide it
+   too. See setLayout() in core/app.js.
+   --------------------------------------------------------------------- */
+html.is-narrow .only-mobile{display:flex}
+html.is-narrow .sidenav{
+  position:fixed;top:0;left:0;height:100dvh;z-index:50;
+  transform:translateX(-100%);transition:transform .18s ease;
+  padding-top:max(1rem,env(safe-area-inset-top));
 }
-@media (min-width:861px){ .tabbar{display:none} .scrim{display:none} }
+html.is-narrow .sidenav.open{transform:none;box-shadow:var(--shadow-2)}
+html.is-narrow .view{padding:.75rem;padding-bottom:6.5rem}
+html.is-narrow .credit{padding-bottom:5rem}
+html:not(.is-narrow) .tabbar,
+html:not(.is-narrow) .scrim{display:none}
 @media (prefers-reduced-motion:reduce){ .sidenav{transition:none} }
+
+/* Fingers are not mouse pointers. Anything tappable gets the full 44px
+   on the phone layout, which is the smallest target most people can hit
+   reliably on the first try. Measured by scripts/mobile-audit.mjs, which
+   fails the build if something drops below it. */
+html.is-narrow .pill-btn,
+html.is-narrow .btn.small,
+html.is-narrow .avatar{min-height:44px}
+html.is-narrow .avatar{width:44px;height:44px}
+html.is-narrow .btn{min-height:44px}
+html.is-narrow .navlink{min-height:48px}
+html.is-narrow input,
+html.is-narrow select,
+html.is-narrow textarea{min-height:44px;font-size:16px}
 
 /* ---------- page furniture ---------- */
 .page-head{display:flex;flex-wrap:wrap;align-items:flex-start;gap:.6rem;margin-bottom:.9rem}
@@ -277,16 +311,14 @@ td.num,th.num{text-align:right;font-family:var(--mono);font-variant-numeric:tabu
 tfoot td{font-weight:700;background:var(--surface-2);border-top:2px solid var(--line)}
 
 /* Card-style rows on a phone: tables are unreadable at 360px. */
-@media (max-width:640px){
-  table.stack thead{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
-  table.stack tr{display:block;border-bottom:1px solid var(--line);padding:.55rem .7rem}
-  table.stack tr:last-child{border-bottom:0}
-  table.stack td{display:flex;justify-content:space-between;gap:1rem;border:0;padding:.15rem 0}
-  table.stack td::before{content:attr(data-l);color:var(--muted);font-size:.78rem;flex:0 0 auto}
-  table.stack td.num{text-align:right}
-  table.stack td.primary{font-weight:650;font-size:1rem}
-  table.stack td.primary::before{font-weight:400}
-}
+html.is-phone table.stack thead{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+html.is-phone table.stack tr{display:block;border-bottom:1px solid var(--line);padding:.55rem .7rem}
+html.is-phone table.stack tr:last-child{border-bottom:0}
+html.is-phone table.stack td{display:flex;justify-content:space-between;gap:1rem;border:0;padding:.15rem 0}
+html.is-phone table.stack td::before{content:attr(data-l);color:var(--muted);font-size:.78rem;flex:0 0 auto}
+html.is-phone table.stack td.num{text-align:right}
+html.is-phone table.stack td.primary{font-weight:650;font-size:1rem}
+html.is-phone table.stack td.primary::before{font-weight:400}
 
 /* ---------- toasts & modal ---------- */
 .toasts{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(72px + env(safe-area-inset-bottom));z-index:90;display:flex;flex-direction:column;gap:.4rem;width:min(94vw,26rem)}
@@ -304,10 +336,8 @@ tfoot td{font-weight:700;background:var(--surface-2);border-top:2px solid var(--
 }
 .modal-head{display:flex;align-items:center;gap:.5rem;margin-bottom:.8rem}
 .modal-head h2{margin:0;flex:1;font-size:1.05rem}
-@media (min-width:641px){
-  .modal-scrim{align-items:center;padding:1.5rem}
-  .modal{border-radius:14px}
-}
+html:not(.is-phone) .modal-scrim{align-items:center;padding:1.5rem}
+html:not(.is-phone) .modal{border-radius:14px}
 
 /* ---------- auth ---------- */
 .auth{min-height:100dvh;display:flex;align-items:center;justify-content:center;padding:1.2rem}
