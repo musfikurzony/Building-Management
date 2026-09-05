@@ -6,7 +6,7 @@
 
 import { el, field, select, money, table, badge, ok, err, modal, confirmBox,
          emptyState, fdate } from '../core/ui.js';
-import { q, insert, update, del } from '../core/db.js';
+import { q, insert, update, del, rpc } from '../core/db.js';
 import { refresh } from '../core/router.js';
 import { can, ref, state, invalidate } from '../core/store.js';
 
@@ -125,13 +125,25 @@ async function rolesView(){
   page.append(el('div', { class:'page-head' },
     el('h1', { text:'Roles & permissions' }),
     el('p', { class:'sub', text:'A tick here writes a permission row. The rule it stands for is applied inside the database on every request, not in the browser.' })));
-  page.append(el('div', { class:'toolbar' }, el('a', { class:'btn', href:'#/users', text:'← Users' })));
+  const bar = el('div', { class:'toolbar' }, el('a', { class:'btn', href:'#/users', text:'← Users' }));
+  if (can('users','manage')){
+    bar.append(el('button', { class:'btn primary', text:'＋ New role',
+      onclick: () => newRoleDialog(roles) }));
+  }
+  page.append(bar);
 
   for (const role of roles){
-    const card = el('section', { class:'card' },
-      el('div', { class:'card-head' },
-        el('h2', { text: role.name }),
-        role.is_superuser ? el('span', { class:'badge b-active', text:'all permissions' }) : null));
+    const head = el('div', { class:'card-head' },
+      el('h2', { text: role.name }),
+      role.is_superuser ? el('span', { class:'badge b-active', text:'all permissions' }) : null,
+      role.is_system    ? el('span', { class:'badge b-draft',  text:'built in' })
+                        : el('span', { class:'badge b-active', text:'yours' }));
+    if (!role.is_system && can('users','manage')){
+      head.append(el('span', { class:'spacer' }));
+      head.append(el('button', { class:'btn small danger', text:'Remove',
+        onclick: () => removeRole(role) }));
+    }
+    const card = el('section', { class:'card' }, head);
     card.append(el('p', { class:'small muted', text: role.description || '' }));
     card.append(el('p', { class:'small' },
       'Posts without approval up to ',
@@ -176,4 +188,83 @@ async function rolesView(){
     page.append(card);
   }
   return page;
+}
+
+/* ------------------------------------------------------------------
+   Making a role of your own.
+
+   Starting from nothing is 190 checkboxes and easy to get wrong in the
+   dangerous direction — the mistake you make is forgetting to remove
+   something, not forgetting to add it. So the dialog is built around
+   copying an existing role and then narrowing it, which is also how
+   people describe what they want: "like the caretaker, but only the
+   generator".
+
+   Everything this writes is checked again in the database. A role with
+   full access can only be made by someone who already has full access,
+   and a permission can only be ticked on by someone who holds it — see
+   sql/080_roles.sql, which exists because an Admin could previously
+   promote themselves to Super Admin this way.
+   ------------------------------------------------------------------ */
+async function newRoleDialog(roles){
+  const name = el('input', { type:'text', maxlength:'40', required:true,
+                             placeholder:'Generator Operator' });
+  const desc = el('input', { type:'text', maxlength:'120',
+                             placeholder:'What this person is responsible for' });
+
+  const copyable = roles.filter(r => !r.is_superuser);
+  const copy = select(
+    [{ value:'', label:'Nothing — start with no access at all' },
+     ...copyable.map(r => ({ value:r.id, label:`Start from ${r.name}` }))],
+    { value: (copyable.find(r => r.code === 'CARETAKER') || {}).id || '' });
+
+  const approve  = el('input', { type:'number', min:'0', step:'0.01', value:'0' });
+  const autopost = el('input', { type:'number', min:'0', step:'0.01', value:'0' });
+
+  const body = el('div', {},
+    field('Role name', name, { required:true, hint:'What the job is called. You can rename it later.' }),
+    field('Description', desc),
+    field('Copy the permissions from', copy,
+      { hint:'You tick and untick afterwards. Copying is only the starting point.' }),
+    el('div', { class:'grid g-form' },
+      field('Can approve up to', approve, { hint:'0 means they approve nothing' }),
+      field('Posts without approval up to', autopost,
+            { hint:'0 means everything they enter waits for someone else' })));
+
+  const go = await modal({ title:'A new role', body, actions:[
+    { label:'Cancel', value:null },
+    { label:'Create role', kind:'primary',
+      validate: () => {
+        if (name.value.trim()) return true;
+        err('Give the role a name'); name.focus(); return false;
+      },
+      value: true }
+  ]});
+  if (!go) return;
+
+  try {
+    const r = await rpc('create_role', {
+      p_name: name.value.trim(),
+      p_description: desc.value.trim() || null,
+      p_copy_from: copy.value || null,
+      p_approve_limit: Number(approve.value || 0),
+      p_auto_post_limit: Number(autopost.value || 0)
+    });
+    invalidate('roles');
+    ok(`${r.name} created — now tick what it should reach`);
+    refresh();
+  } catch { /* toast shown */ }
+}
+
+async function removeRole(role){
+  const yes = await confirmBox('Remove this role?',
+    `${role.name} will be gone. Anyone still holding it must be moved off it first — the database will refuse otherwise.`,
+    'Remove role', 'danger');
+  if (!yes) return;
+  try {
+    await rpc('delete_role', { p_role: role.id });
+    invalidate('roles');
+    ok(`${role.name} removed`);
+    refresh();
+  } catch { /* toast shown */ }
 }

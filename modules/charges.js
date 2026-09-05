@@ -147,7 +147,15 @@ export async function paymentDialog(flatId){
   const dateI = el('input', { type:'date', value: todayISO(), required:true });
   const methI = select(['CASH','BKASH','NAGAD','BANK_TRANSFER','CHEQUE','ROCKET','CARD']
                   .map(x => ({ value:x, label:x.replace(/_/g,' ') })), { value:'CASH' });
-  const acctI = select(accounts.map(a => ({ value:a.id, label:a.name })), { placeholder:'Choose an account' });
+  // Pre-selected, because the answer is nearly always the same one and
+  // this dialog is used dozens of times a month. Recording 36 payments
+  // should not mean choosing the same cash account 36 times. Settings ->
+  // "Default cash account" decides it; with only one account on file,
+  // that one. It is still a real choice — just one already made.
+  const defaultAcct = settings().default_cash_account_id
+                   || (accounts.length === 1 ? accounts[0].id : '');
+  const acctI = select(accounts.map(a => ({ value:a.id, label:a.name })),
+                       { value: defaultAcct, placeholder:'Choose an account' });
   const refI  = el('input', { type:'text', maxlength:'80', placeholder:'bKash trx id, cheque no' });
   const payerI = el('input', { type:'text', maxlength:'120', placeholder:'If not the owner' });
 
