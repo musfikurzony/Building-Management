@@ -8,6 +8,12 @@ import { sb, isConfigured, friendly, logEvent, q, rpc } from './db.js';
 import { state, loadSession, loadProfile, signOut, can, canAny } from './store.js';
 import { ROUTES, renderRoute, currentRoute } from './router.js';
 import { t, setLang, currentLang } from './i18n.js';
+import { watchLayout, cycleLayoutPref, layoutMenuLabel, layoutPref } from './layout.js';
+
+// Before anything paints. The boot splash is on screen at this point and
+// #app is still hidden, so the layout class is set before the shell is
+// ever visible and there is no flash of the wrong one.
+watchLayout();
 
 const ICONS = {
   dashboard:'▦', flats:'⌂', charges:'৳', finance:'☰', bank:'▤', reports:'▥',
@@ -215,10 +221,23 @@ function wireShell(){
   document.addEventListener('click', (e) => {
     if (!panel.hidden && !e.target.closest('.usermenu')) { panel.hidden = true; userBtn.setAttribute('aria-expanded','false'); }
   });
+  const layoutItem = $('#layoutItem');
+  const paintLayoutItem = () => { if (layoutItem) layoutItem.textContent = layoutMenuLabel(); };
+  paintLayoutItem();
+
   panel.addEventListener('click', async (e) => {
     const act = e.target.dataset?.act;
     if (act === 'signout'){ await logEvent('LOGOUT'); await signOut(); renderShell(); }
     if (act === 'profile'){ panel.hidden = true; await editMyDetails(); }
+    if (act === 'layout'){
+      // Stays open: the layout changes underneath, and seeing it change
+      // is how you know which of the three settings you are now on.
+      const next = cycleLayoutPref();
+      paintLayoutItem();
+      ok(next === 'auto' ? 'View set automatically'
+       : next === 'mobile' ? 'Mobile view — stays on, even on a big screen'
+       : 'Desktop view — stays on, even on a phone');
+    }
   });
 
   $('#langBtn').onclick = () => {
