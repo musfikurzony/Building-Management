@@ -9,6 +9,7 @@ import { el, html, field, select, money, money0, num, fdate, badge, table, empty
 import { q, one, rpc, logEvent } from '../core/db.js';
 import { can, ref, state, settings, invalidate } from '../core/store.js';
 import { go, refresh } from '../core/router.js';
+import { reminderDialog, reminderSummaries, reminderCell, remindButton, reminderHistory } from '../core/reminder.js';
 
 const now = new Date();
 
@@ -83,8 +84,9 @@ async function monthsView(){
 }
 
 async function monthGrid(y, m){
-  const rows = await q('v_flat_charges', b => b.eq('period_year', y).eq('period_month', m)
-    .order('flat_number'));
+  const [rows, sums] = await Promise.all([
+    q('v_flat_charges', b => b.eq('period_year', y).eq('period_month', m).order('flat_number')),
+    reminderSummaries()]);
   const cols = [
     { label:'Flat', primary:true, key:'flat_number' },
     { label:'Charge', cls:'num', fmt: r => money(r.charge_amount, { bare:true }), csv: r => r.charge_amount },
@@ -92,12 +94,14 @@ async function monthGrid(y, m){
     { label:'Payable', cls:'num', fmt: r => money(r.net_payable, { bare:true }), csv: r => r.net_payable },
     { label:'Paid', cls:'num', fmt: r => money(r.paid_amount, { bare:true }), csv: r => r.paid_amount },
     { label:'Due', cls:'num', fmt: r => money(r.due_amount, { bare:true }), csv: r => r.due_amount },
-    { label:'Status', fmt: r => badge(r.status), csv: r => r.status }
+    { label:'Status', fmt: r => badge(r.status), csv: r => r.status },
+    { label:'Reminded', fmt: r => reminderCell(sums.get(r.flat_id)), csv: r => sums.get(r.flat_id)?.since ?? 0 },
+    { label:'', fmt: r => Number(r.due_amount) > 0 ? (remindButton(r.flat_id) || '') : '', csv: () => null }
   ];
   return el('section', { class:'card' },
     el('div', { class:'card-head' }, el('h2', { text:`${monthName(y,m)} — flat by flat` }),
       can('charges','export') ? el('button', { class:'btn small', text:'CSV',
-        onclick: () => downloadCSV(`charges-${y}-${String(m).padStart(2,'0')}.csv`, cols, rows) }) : null),
+        onclick: () => downloadCSV(`charges-${y}-${String(m).padStart(2,'0')}.csv`, cols.slice(0, -1), rows) }) : null),
     table(cols, rows, { onRow: r => go('#/charges/flat/' + r.flat_id) }));
 }
 
@@ -118,7 +122,7 @@ async function generateDialog(){
       `${active.length} active flat${active.length === 1 ? '' : 's'} will be billed, each at its own rate. Flats with no rate of their own use the building default of ${money(s.default_service_charge)}.` }),
     el('div', { class:'grid g-form' }, field('Year', y), field('Month', m)),
     el('p', {}, 'Expected total: ', el('b', { class:'num', text: money(preview) })),
-    el('p', { class:'hint', text:'Running this twice is refused by the database, so nothing can be double-billed.' }));
+    el('p', { class:'hint', text:'Safe to run again later. It bills only the flats that are not billed for that month yet, so adding a flat mid-month and pressing this again picks it up without charging anyone twice.' }));
 
   const res = await modal({ title:'Generate monthly charges', body, actions:[
     { label:'Cancel', value:null },
@@ -128,7 +132,10 @@ async function generateDialog(){
   try {
     const run = await rpc('generate_monthly_charges', { p_year: Number(y.value), p_month: Number(m.value) });
     const row = Array.isArray(run) ? run[0] : run;
-    ok(`Generated ${row?.flat_count ?? active.length} charges totalling ${money(row?.total_amount ?? preview)}.`);
+    // The function reports what THIS press added, which is the thing the
+    // person is actually asking about — pressing it a second time after
+    // adding a flat should say "1 flat billed", not restate the month.
+    ok(row?.notes || `${row?.flat_count ?? active.length} flats billed, ${money(row?.total_amount ?? preview)}.`);
     go('#/charges');
   } catch { /* the error toast already explains it */ }
 }
@@ -245,12 +252,48 @@ async function receiptDialog(paymentId){
         el('tbody', {}, lines))) : null,
     advance > 0.001 ? el('p', { class:'small', text: `Kept as advance: ${money(advance)}` }) : null);
 
+  // The same receipt as a picture. Owners forward and keep an image;
+  // they do not keep a wall of text, and six months later a picture is
+  // what settles "did I pay for September".
+  const asImage = async () => {
+    const { receiptImage, shareReceipt } = await import('../core/receipt.js');
+    const blob = await receiptImage({
+      building:  s.building_name || 'Building',
+      address:   s.address || '',
+      title:     'Service charge receipt',
+      receiptNo: p.receipt_no,
+      date:      fdate(p.payment_date),
+      flat:      flat?.flat_number || '',
+      method:    String(p.method).replace(/_/g,' '),
+      amount:    money(p.amount),
+      advance:   advance > 0.001 ? `Kept as advance: ${money(advance)}` : '',
+      lines:     allocs.map(a => {
+        const c = charges.find(x => x.id === a.flat_charge_id);
+        return { label: c ? (c.charge_source === 'OPENING' ? 'Balance brought forward'
+                                                           : monthName(c.period_year, c.period_month))
+                          : 'Applied',
+                 value: money(a.amount, { bare:true }) };
+      }),
+      footer: 'Thank you.'
+    });
+
+    const name = `receipt-${p.receipt_no || 'payment'}.png`;
+    const text = `${s.building_name || 'Building'} — service charge receipt ${p.receipt_no}`;
+    const how = await shareReceipt(blob, name, text);
+    if (how === 'downloaded') ok('Receipt image saved — attach it in WhatsApp');
+    if (how === 'shared')     ok('Receipt shared');
+  };
+
   await modal({ title:'Receipt', body, actions:[
-    { label:'Print', value:'print' },
-    { label:'Share on WhatsApp', value:'wa' },
-    { label:'Done', kind:'primary', value:null }
+    { label:'Print / PDF', value:'print' },
+    { label:'Send as image', kind:'primary', value:'img' },
+    { label:'Send as text', value:'wa' },
+    { label:'Done', value:null }
   ]}).then(async (action) => {
     if (action === 'print') window.print();
+    if (action === 'img'){
+      try { await asImage(); } catch (e){ err('Could not make the receipt image: ' + (e.message || e)); }
+    }
     if (action === 'wa'){
       const msg = [
         `${s.building_name || 'Building'} — service charge receipt`,
@@ -278,6 +321,7 @@ async function outstanding(){
   const buckets = { current:0, d30:0, d60:0, d90:0, d90p:0 };
   for (const c of aged) buckets[bucketOf(Number(c.days_overdue))] += Number(c.due_amount);
 
+  const sums = await reminderSummaries();
   const total = rows.reduce((t,r) => t + Number(r.outstanding), 0);
   const cols = [
     { label:'Flat', primary:true, key:'flat_number' },
@@ -285,8 +329,11 @@ async function outstanding(){
     { label:'Billed to', fmt: r => r.billed_to || '—', csv: r => r.billed_to },
     { label:'Mobile', fmt: r => r.billed_mobile || '—', csv: r => r.billed_mobile },
     { label:'Last payment', fmt: r => r.last_payment_date ? fdate(r.last_payment_date) : 'never', csv: r => r.last_payment_date },
-    { label:'Outstanding', cls:'num', fmt: r => money(r.outstanding, { bare:true }), csv: r => r.outstanding }
+    { label:'Outstanding', cls:'num', fmt: r => money(r.outstanding, { bare:true }), csv: r => r.outstanding },
+    { label:'Reminded', fmt: r => reminderCell(sums.get(r.flat_id)), csv: r => sums.get(r.flat_id)?.since ?? 0 },
+    { label:'', fmt: r => remindButton(r.flat_id) || '' }
   ];
+  const csvCols = cols.slice(0, -1);
 
   return el('div', {},
     el('div', { class:'page-head' },
@@ -302,7 +349,8 @@ async function outstanding(){
       el('a', { class:'btn', href:'#/charges', text:'← Service charge' }),
       el('span', { class:'spacer' }),
       can('charges','export') ? el('button', { class:'btn small', text:'Export CSV',
-        onclick: () => { downloadCSV('outstanding.csv', cols, rows); logEvent('EXPORT', { module:'charges', detail:'outstanding list' }); } }) : null),
+        onclick: () => { downloadCSV('outstanding.csv', csvCols, rows); logEvent('EXPORT', { module:'charges', detail:'outstanding list' }); } }) : null),
+    el('p', { class:'hint', text:'Reminded = reminders sent since the flat last paid, and the date of the latest. Remind opens a ready-written WhatsApp or SMS message.' }),
     table(cols, rows, { onRow: r => go('#/charges/flat/' + r.flat_id), empty:'Every flat is up to date.' }));
 }
 
@@ -349,11 +397,14 @@ async function statement(flatId){
     stat('Last payment', d.last_payment_date ? fdate(d.last_payment_date) : 'never')));
 
   const bar = el('div', { class:'toolbar' },
-    el('a', { class:'btn', href:'#/charges', text:'← Service charge' }));
+    el('a', { class:'btn', href:'#/charges', text:'← Service charge' }),
+    el('a', { class:'btn', href:`#/flats/${flatId}`, text:'Owner & tenant' }));
   if (can('charges','add')){
     const p = el('button', { class:'btn primary', text:'Record a payment' });
     p.onclick = async () => { const r = await paymentDialog(flatId); if (r) refresh(); };
     bar.append(p);
+    if (Number(d.outstanding) > 0)
+      bar.append(el('button', { class:'btn', text:'Send a reminder', onclick: () => reminderDialog(flatId) }));
   }
   bar.append(el('span', { class:'spacer' }),
     el('button', { class:'btn small', text:'Print', onclick: () => window.print() }));
@@ -385,6 +436,7 @@ async function statement(flatId){
     }
     page.append(waivable);
   }
+  page.append(await reminderHistory(flatId));
   return page;
 }
 

@@ -1,74 +1,127 @@
-/* Flats, owners and who is billed. The flat count and every rate live
-   here as data — nothing about "36 flats" or "Tk 5,000" is in code. */
+/* Flats, the people in them, and who pays.
 
-import { el, field, select, money, num, table, emptyState, ok, err, modal,
-         downloadCSV, todayISO, badge, stat } from '../core/ui.js';
-import { q, one, insert, update, del, logEvent } from '../core/db.js';
+   A flat has an owner and may have a tenant; exactly one of them receives
+   the service-charge bill. In this building that is often the tenant —
+   owners who live elsewhere let the flat and the tenant pays the building
+   directly — so "who lives here" and "who pays" are separate questions,
+   answered separately on screen.
+
+   Every change of person goes through a database function
+   (set_flat_owner, set_flat_tenant, end_tenancy, set_billed_party). The
+   screen used to write occupancy rows itself, and in doing so it ended the
+   owner's ownership whenever a tenant was linked. */
+
+import { el, field, select, money, num, fdate, table, emptyState, ok, err, modal,
+         confirmBox, downloadCSV, todayISO, badge, stat } from '../core/ui.js';
+import { q, one, insert, update, rpc, logEvent, isMissingObject, friendly } from '../core/db.js';
 import { can, ref, invalidate, settings } from '../core/store.js';
 import { go, refresh } from '../core/router.js';
+import { reminderDialog, reminderHistory, reminderSummaries } from '../core/reminder.js';
 
 export async function render({ params }){
-  if (params[0] === 'owners') return ownersView();
+  if (params[0] === 'owners') return peopleView();
+  if (params[0]){
+    if (!/^[0-9a-f-]{36}$/i.test(params[0])) return emptyState('That link does not point to a flat.');
+    return flatPage(params[0]);
+  }
   return flatsView();
 }
 
+/** v_flat_people arrives with 085. Before that, an empty list and a flag,
+    so the rest of the screen keeps working and says what to run. */
+async function peopleRows(build = (b) => b){
+  try { return { rows: await q('v_flat_people', build, { silent:true }), missing:false }; }
+  catch (e){ if (isMissingObject(e.original || e)) return { rows: [], missing: true }; throw e; }
+}
+
+const needsUpdate = (what) => el('div', { class:'alert normal' }, el('div', { class:'a-body' },
+  el('div', { class:'a-title', text:`${what} needs a database update` }),
+  el('div', { class:'a-meta', text:'In Supabase open the SQL Editor and run sql/PATCH.sql — it is safe to run twice — then reload this page.' })));
+
+/* ==================================================================
+   THE LIST
+   ================================================================== */
 async function flatsView(){
   const page = el('div', {});
   page.append(el('div', { class:'page-head' }, el('h1', { text:'Flats & owners' })));
 
-  const [flats, dues] = await Promise.all([ref('flats', true), q('v_flat_dues').catch(() => [])]);
+  const [flats, dues, people] = await Promise.all([
+    ref('flats', true), q('v_flat_dues').catch(() => []), peopleRows()]);
   const dueOf = (id) => dues.find(d => d.flat_id === id) || {};
+  const pplOf = (id) => people.rows.find(p => p.flat_id === id) || {};
   const s = settings();
 
   const active = flats.filter(f => f.status === 'ACTIVE');
   const monthly = active.reduce((t,f) => t + Number(f.service_charge ?? s.default_service_charge ?? 0), 0);
+  const let_ = people.rows.filter(p => p.tenant_id).length;
 
   page.append(el('div', { class:'grid g-stats' },
     stat('Flats', num(flats.length), `${active.length} active`),
-    stat('Floors', num(s.floor_count || Math.max(0, ...flats.map(f => f.floor)))),
+    stat('Let to tenants', people.missing ? '—' : num(let_), people.missing ? '' : `${num(active.length - let_)} lived in by owners`),
     stat('Monthly billing', money(monthly), 'if every active flat is billed'),
     stat('Default rate', money(s.default_service_charge), 'used when a flat has none')));
+  if (people.missing) page.append(needsUpdate('Showing tenants'));
 
   const bar = el('div', { class:'toolbar' });
   if (can('flats','add')){
     bar.append(el('button', { class:'btn primary', text:'＋ Add flat', onclick: () => flatDialog(null) }));
   }
-  bar.append(el('a', { class:'btn', href:'#/flats/owners', text:'Owners' }));
-  const search = el('input', { type:'search', placeholder:'Search flat or owner…' });
+  bar.append(el('a', { class:'btn', href:'#/flats/owners', text:'People' }));
+  const search = el('input', { type:'search', placeholder:'Search flat, owner or tenant…' });
   bar.append(el('div', { class:'grow' }, search));
   bar.append(el('span', { class:'spacer' }));
+
+  // Who pays, with the relationship said out loud: "Rahim (tenant)".
+  const billedName = (f) => {
+    const p = pplOf(f.id);
+    if (p.billed_relation === 'TENANT') return `${p.tenant_name} (tenant)`;
+    if (p.billed_relation === 'OWNER')  return p.owner_name;
+    return dueOf(f.id).billed_to || '';
+  };
+  const billedMobile = (f) => {
+    const p = pplOf(f.id);
+    if (p.billed_relation === 'TENANT') return p.tenant_mobile;
+    if (p.billed_relation === 'OWNER')  return p.owner_mobile;
+    return dueOf(f.id).billed_mobile;
+  };
 
   const cols = [
     { label:'Flat', primary:true, key:'flat_number' },
     { label:'Floor', cls:'num', key:'floor' },
-    { label:'Area', cls:'num', fmt: f => f.area_sqft ? num(f.area_sqft) + ' sq ft' : '—', csv: f => f.area_sqft },
     { label:'Monthly charge', cls:'num', csv: f => f.service_charge ?? s.default_service_charge,
       fmt: f => money(f.service_charge ?? s.default_service_charge, { bare:true }) + (f.service_charge ? '' : ' *') },
-    { label:'Billed to', fmt: f => dueOf(f.id).billed_to || '—', csv: f => dueOf(f.id).billed_to },
-    { label:'Mobile', fmt: f => dueOf(f.id).billed_mobile || '—', csv: f => dueOf(f.id).billed_mobile },
+    { label:'Owner', fmt: f => pplOf(f.id).owner_name || '—', csv: f => pplOf(f.id).owner_name },
+    { label:'Pays', fmt: f => billedName(f) || '—', csv: f => billedName(f) },
+    { label:'Mobile', fmt: f => billedMobile(f) || '—', csv: f => billedMobile(f) },
     { label:'Outstanding', cls:'num', csv: f => dueOf(f.id).outstanding || 0,
       fmt: f => money(dueOf(f.id).outstanding || 0, { bare:true }) },
-    { label:'Status', fmt: f => badge(f.status), csv: f => f.status }
+    { label:'Status', fmt: f => badge(f.status), csv: f => f.status },
+    { label:'', fmt: f => can('flats','edit')
+        ? el('button', { class:'btn small', text:'Edit',
+            onclick: (e) => { e.stopPropagation(); flatDialog(f); } })
+        : '' }
   ];
 
   if (can('flats','export'))
     bar.append(el('button', { class:'btn small', text:'Export CSV', onclick: () => {
-      downloadCSV('flats.csv', cols, flats); logEvent('EXPORT', { module:'flats' });
+      downloadCSV('flats.csv', cols.slice(0, -1), flats); logEvent('EXPORT', { module:'flats' });
     }}));
   page.append(bar);
 
   const host = el('div', {});
   const paint = () => {
     const term = search.value.trim().toLowerCase();
-    const list = term ? flats.filter(f =>
-      f.flat_number.toLowerCase().includes(term) ||
-      String(dueOf(f.id).billed_to || '').toLowerCase().includes(term)) : flats;
+    const list = term ? flats.filter(f => {
+      const p = pplOf(f.id);
+      return [f.flat_number, p.owner_name, p.tenant_name, dueOf(f.id).billed_to]
+        .some(x => String(x || '').toLowerCase().includes(term));
+    }) : flats;
     host.replaceChildren(
       table(cols, list, {
-        onRow: f => go('#/charges/flat/' + f.id),
+        onRow: f => go('#/flats/' + f.id),
         empty: flats.length ? 'No flat matches that search.'
-                            : 'No flats yet. Add them one at a time, or import the list.' }),
-      el('p', { class:'hint', text:'* uses the building default rate. Tap a flat to open its statement.' }));
+                            : 'No flats yet. Add them one at a time, or paste the list below.' }),
+      el('p', { class:'hint', text:'* uses the building default rate. Tap a flat to see its owner, tenant, payments and reminders.' }));
   };
   search.oninput = paint;
   paint();
@@ -118,15 +171,18 @@ async function flatDialog(flat){
   const chgI  = el('input', { type:'number', step:'0.01', min:'0', value: flat?.service_charge ?? '' });
   const stI   = select([{ value:'ACTIVE', label:'Active' }, { value:'INACTIVE', label:'Inactive' }],
                         { value: flat?.status || 'ACTIVE' });
-  const noteI = el('textarea', { rows:2, value: flat?.notes || '' });
+  const noteI = el('textarea', { rows:2 });
+  noteI.value = flat?.notes || '';
 
   const body = el('div', {},
     el('div', { class:'grid g-form' }, field('Flat number', numI, { required:true }), field('Floor', flrI, { required:true })),
     el('div', { class:'grid g-form' }, field('Area (sq ft)', areaI),
       field('Monthly charge', chgI, { hint:`Leave blank to use the building default of ${money(settings().default_service_charge)}` })),
-    field('Status', stI), field('Notes', noteI));
+    field('Status', stI, { hint: flat ? 'An inactive flat is not billed when a month is generated.' : null }),
+    field('Notes', noteI),
+    flat ? el('p', { class:'hint', text:'Owner, tenant and phone numbers are on the flat’s own page — tap the flat in the list.' }) : null);
 
-  const res = await modal({ title: flat ? `Edit ${flat.flat_number}` : 'Add a flat', body, actions:[
+  const res = await modal({ title: flat ? `Edit flat ${flat.flat_number}` : 'Add a flat', body, actions:[
     { label:'Cancel', value:null },
     { label:'Save', kind:'primary', validate: () => {
         if (!numI.value.trim()){ err('A flat number is required.'); return false; }
@@ -146,86 +202,351 @@ async function flatDialog(flat){
     if (flat) await update('flats', flat.id, payload);
     else      await insert('flats', payload);
     invalidate('flats');
-    ok('Saved'); refresh();
+    ok(flat ? `Flat ${payload.flat_number} saved` : `Flat ${payload.flat_number} added`);
+    refresh();
   } catch { /* toast shown */ }
 }
 
-/* ------------------------------------------------------------------ */
-async function ownersView(){
-  const [owners, flats, occ] = await Promise.all([
-    ref('owners', true), ref('flats'), q('flat_occupancy', b => b.is('to_date', null)).catch(() => [])
+/* ==================================================================
+   ONE FLAT — who lives there, who pays, what is owed, who was chased
+   ================================================================== */
+async function flatPage(flatId){
+  const flat = await one('flats', b => b.eq('id', flatId));
+  if (!flat) return emptyState('That flat does not exist.');
+
+  const [dues, people, sums, hist] = await Promise.all([
+    q('v_flat_dues', b => b.eq('flat_id', flatId)).catch(() => []),
+    peopleRows(b => b.eq('flat_id', flatId)),
+    can('charges','view') ? reminderSummaries() : new Map(),
+    q('flat_occupancy', b => b.eq('flat_id', flatId).order('from_date', { ascending:false })).catch(() => [])
   ]);
-  const flatsOf = (ownerId) => occ.filter(o => o.owner_id === ownerId)
-    .map(o => flats.find(f => f.id === o.flat_id)?.flat_number).filter(Boolean).join(', ');
+  const d = dues[0] || {};
+  const p = people.rows[0] || {};
+  const rs = sums.get(flatId);
+  const s = settings();
+  const owes = Number(d.outstanding) > 0;
 
-  const cols = [
-    { label:'Name', primary:true, key:'name' },
-    { label:'Flats', fmt: o => flatsOf(o.id) || '—', csv: o => flatsOf(o.id) },
-    { label:'Mobile', fmt: o => o.mobile || '—', csv: o => o.mobile },
-    { label:'Email', fmt: o => o.email || '—', csv: o => o.email },
-    { label:'', fmt: o => can('flats','edit')
-        ? el('button', { class:'btn small', text:'Edit', onclick: (e) => { e.stopPropagation(); ownerDialog(o); } })
-        : '' }
-  ];
+  const page = el('div', {});
+  page.append(el('div', { class:'page-head' },
+    el('h1', { text:`Flat ${flat.flat_number}` }),
+    el('p', { class:'sub', text: [
+      `Floor ${flat.floor}`,
+      flat.area_sqft ? `${num(flat.area_sqft)} sq ft` : null,
+      `${money(flat.service_charge ?? s.default_service_charge)} a month${flat.service_charge ? '' : ' (building default)'}`,
+      flat.status === 'ACTIVE' ? null : 'inactive'
+    ].filter(Boolean).join(' · ') })));
 
-  const bar = el('div', { class:'toolbar' },
-    el('a', { class:'btn', href:'#/flats', text:'← Flats' }));
-  if (can('flats','add'))
-    bar.append(el('button', { class:'btn primary', text:'＋ Add owner', onclick: () => ownerDialog(null) }));
-  bar.append(el('span', { class:'spacer' }));
-  if (can('flats','export'))
-    bar.append(el('button', { class:'btn small', text:'Export CSV', onclick: () => {
-      downloadCSV('owners.csv', cols.slice(0,4), owners); logEvent('EXPORT', { module:'flats', detail:'owner list' });
-    }}));
+  const bar = el('div', { class:'toolbar' }, el('a', { class:'btn', href:'#/flats', text:'← Flats' }));
+  if (can('flats','edit')) bar.append(el('button', { class:'btn', text:'Edit flat', onclick: () => flatDialog(flat) }));
+  if (can('charges','view')) bar.append(el('a', { class:'btn', href:`#/charges/flat/${flatId}`, text:'Statement' }));
+  if (owes && can('charges','add'))
+    bar.append(el('button', { class:'btn primary', text:'Send a reminder', onclick: () => reminderDialog(flatId) }));
+  page.append(bar);
 
-  return el('div', {},
-    el('div', { class:'page-head' }, el('h1', { text:'Owners & residents' })),
-    bar,
-    table(cols, owners, { empty:'No owners recorded yet.' }));
+  // Money is shown only to people who may see service charges; for anyone
+  // else the view returns nothing, and "Tk 0 outstanding" would be a lie.
+  if (can('charges','view')) page.append(el('div', { class:'grid g-stats' },
+    stat('Outstanding', money(d.outstanding || 0), null, owes ? 'bad' : 'good'),
+    stat('Advance held', money(d.advance || 0)),
+    stat('Last payment', d.last_payment_date ? fdate(d.last_payment_date) : 'never'),
+    stat('Reminders', rs ? `${rs.since} since paying` : 'none', rs ? `${rs.total} in all` : null,
+         rs && rs.since >= 2 ? 'bad' : '')));
+
+  page.append(people.missing ? needsUpdate('Managing owners and tenants') : peopleCard(flat, p));
+
+  if (flat.notes) page.append(el('section', { class:'card' },
+    el('div', { class:'card-head' }, el('h2', { text:'Notes' })), el('p', { text: flat.notes })));
+
+  if (can('charges','view')) page.append(await reminderHistory(flatId));
+
+  const past = hist.filter(h => h.to_date);
+  if (past.length){
+    const owners = await ref('owners', true);
+    const nameOf = (id) => (owners.find(o => o.id === id) || {}).name || '—';
+    page.append(el('section', { class:'card' },
+      el('div', { class:'card-head' }, el('h2', { text:'Past owners and tenants' })),
+      table([
+        { label:'Name', primary:true, fmt: h => nameOf(h.owner_id) },
+        { label:'As', fmt: h => h.relation_type === 'TENANT' ? 'Tenant' : 'Owner' },
+        { label:'From', fmt: h => fdate(h.from_date) },
+        { label:'To', fmt: h => fdate(h.to_date) }
+      ], past)));
+  }
+  return page;
 }
 
-async function ownerDialog(owner){
-  const nameI = el('input', { type:'text', required:true, value: owner?.name || '' });
-  const mobI  = el('input', { type:'tel', value: owner?.mobile || '', placeholder:'01XXXXXXXXX' });
-  const mailI = el('input', { type:'email', value: owner?.email || '' });
-  const altI  = el('input', { type:'text', value: owner?.alt_contact || '' });
-  const flats = await ref('flats');
-  const occ = owner ? await q('flat_occupancy', b => b.eq('owner_id', owner.id).is('to_date', null)).catch(() => []) : [];
-  const linked = new Set(occ.map(o => o.flat_id));
-  const flatI = select(flats.map(f => ({ value:f.id, label:f.flat_number })),
-                       { value: occ[0]?.flat_id, placeholder:'Not linked to a flat' });
-  const relI = select([{ value:'OWNER', label:'Owner' }, { value:'TENANT', label:'Tenant' }],
-                      { value: occ[0]?.relation_type || 'OWNER' });
+function personLine(role, name, mobile, email, since, billed){
+  return el('div', { class:'person' },
+    el('div', { class:'person-role' }, el('span', { text: role }),
+      billed ? el('span', { class:'badge b-active', text:'pays' }) : null),
+    el('div', { class:'person-main' },
+      el('b', { text: name }),
+      el('div', { class:'small muted', text: [mobile, email, since ? `since ${fdate(since)}` : null].filter(Boolean).join(' · ') || 'no contact details' })));
+}
+
+function peopleCard(flat, p){
+  const edit = can('flats','edit');
+  const card = el('section', { class:'card' },
+    el('div', { class:'card-head' }, el('h2', { text:'Who lives here and who pays' })));
+
+  // Owner
+  if (p.owner_id){
+    const row = personLine('Owner', p.owner_name, p.owner_mobile, p.owner_email, p.owner_since, p.owner_billed);
+    if (edit) row.append(el('div', { class:'person-acts' },
+      el('button', { class:'btn small', text:'Edit details', onclick: () => personDialog(p.owner_id) }),
+      el('button', { class:'btn small', text:'Change owner', onclick: () => occupantDialog(flat, 'OWNER', p) })));
+    card.append(row);
+  } else {
+    const row = el('div', { class:'person' },
+      el('div', { class:'person-role' }, el('span', { text:'Owner' })),
+      el('div', { class:'person-main muted', text:'Not recorded yet' }));
+    if (edit) row.append(el('div', { class:'person-acts' },
+      el('button', { class:'btn small primary', text:'＋ Add owner', onclick: () => occupantDialog(flat, 'OWNER', p) })));
+    card.append(row);
+  }
+
+  // Tenant
+  if (p.tenant_id){
+    const row = personLine('Tenant', p.tenant_name, p.tenant_mobile, p.tenant_email, p.tenant_since, p.tenant_billed);
+    if (edit) row.append(el('div', { class:'person-acts' },
+      el('button', { class:'btn small', text:'Edit details', onclick: () => personDialog(p.tenant_id) }),
+      el('button', { class:'btn small', text:'Moved out', onclick: () => moveOutDialog(flat, p) })));
+    card.append(row);
+  } else {
+    const row = el('div', { class:'person' },
+      el('div', { class:'person-role' }, el('span', { text:'Tenant' })),
+      el('div', { class:'person-main muted', text:'None — the flat is not let' }));
+    if (edit) row.append(el('div', { class:'person-acts' },
+      el('button', { class:'btn small', text:'＋ Add tenant', onclick: () => occupantDialog(flat, 'TENANT', p) })));
+    card.append(row);
+  }
+
+  // Who pays — only a real choice when both exist.
+  if (p.owner_id && p.tenant_id){
+    const choose = async (rel) => {
+      if (rel === p.billed_relation) return;
+      try {
+        await rpc('set_billed_party', { p_flat: flat.id, p_relation: rel });
+        ok(rel === 'TENANT' ? `The tenant now pays for ${flat.flat_number}` : `The owner now pays for ${flat.flat_number}`);
+        refresh();
+      } catch { /* toast */ }
+    };
+    const seg = el('div', { class:'seg', role:'group', 'aria-label':'Who pays the service charge' },
+      el('button', { class: 'seg-btn' + (p.billed_relation === 'OWNER' ? ' on' : ''), type:'button',
+        'aria-pressed': String(p.billed_relation === 'OWNER'), text:'Owner', disabled: !edit, onclick: () => choose('OWNER') }),
+      el('button', { class: 'seg-btn' + (p.billed_relation === 'TENANT' ? ' on' : ''), type:'button',
+        'aria-pressed': String(p.billed_relation === 'TENANT'), text:'Tenant', disabled: !edit, onclick: () => choose('TENANT') }));
+    card.append(el('div', { class:'pays' },
+      el('span', { text:'Service charge is paid by' }), seg,
+      el('span', { class:'small muted', text:'Bills, receipts and reminders go to this person.' })));
+  } else if (!p.owner_id && !p.tenant_id){
+    card.append(el('p', { class:'hint', text:'Until someone is added, this flat’s bills have no name on them and reminders cannot be sent.' }));
+  }
+  return card;
+}
+
+/* ------------------------------------------------------------------
+   Choosing a person: someone already on file, or a new one.
+   ------------------------------------------------------------------ */
+
+/** A mobile field that says, as you type, whether WhatsApp can use it.
+    The check runs in the database (normalize_mobile) so there is one
+    definition of "a usable number", shared with the reminder itself. */
+function mobileField(value){
+  const input = el('input', { type:'tel', value: value || '', placeholder:'01XXXXXXXXX or +44…', inputmode:'tel' });
+  const hint = el('span', { class:'hint' });
+  let timer;
+  const check = async () => {
+    const v = input.value.trim();
+    if (!v){ hint.textContent = 'Reminders need a mobile number.'; hint.className = 'hint'; return; }
+    try {
+      const n = await rpc('normalize_mobile', { p: v }, { silent:true });
+      hint.textContent = n ? `WhatsApp-ready: +${n}` : 'Not a mobile number WhatsApp can use — check the digits.';
+      hint.className = n ? 'hint ok-line' : 'hint warn-line';
+    } catch { hint.textContent = ''; }
+  };
+  input.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(check, 350); });
+  check();
+  const wrap = el('label', { class:'field' }, el('span', { text:'Mobile' }), input, hint);
+  return { input, el: wrap };
+}
+
+async function occupantDialog(flat, relation, p){
+  const people = await ref('owners', true);
+  const isTenant = relation === 'TENANT';
+  const current = isTenant ? p.tenant_id : p.owner_id;
+  const other   = isTenant ? p.owner_id : p.tenant_id;
+
+  const pick = select([{ value:'__new', label:'Someone new — enter their details below' },
+                       ...people.filter(x => x.id !== current && x.id !== other)
+                             .map(x => ({ value:x.id, label: x.mobile ? `${x.name} · ${x.mobile}` : x.name }))],
+                      { value:'__new' });
+  const nameI = el('input', { type:'text', maxlength:'120' });
+  const mob = mobileField('');
+  const mailI = el('input', { type:'email' });
+  const altI  = el('input', { type:'text' });
+  const fromI = el('input', { type:'date', value: todayISO() });
+  const pays  = el('input', { type:'checkbox' });
+  pays.checked = true;
+
+  const details = el('div', {},
+    field('Name', nameI, { required:true }),
+    el('div', { class:'grid g-form' }, mob.el, field('Email', mailI)),
+    field('Alternate contact', altI));
+  pick.onchange = () => { details.hidden = pick.value !== '__new'; };
+
+  const body = el('div', {},
+    field(isTenant ? 'Tenant' : 'Owner', pick),
+    details,
+    field(isTenant ? 'Moved in on' : (current ? 'Owner from' : 'Owner since'), fromI),
+    isTenant ? el('label', { class:'check' }, pays,
+      el('span', {}, el('b', { text:'The tenant pays the service charge' }),
+        el('span', { class:'small muted', text:' — bills, receipts and reminders go to the tenant. Untick if the owner still pays.' }))) : null,
+    !isTenant && current ? el('p', { class:'hint', text:`${p.owner_name} will be kept on record as a past owner. ` +
+        (p.owner_billed ? 'The new owner takes over the bill.' : 'The tenant carries on paying.') }) : null,
+    isTenant && p.owner_id ? el('p', { class:'hint', text:`${p.owner_name} stays the owner.` }) : null);
+
+  const res = await modal({
+    title: isTenant ? `Add a tenant to ${flat.flat_number}` : (current ? `Change the owner of ${flat.flat_number}` : `Add the owner of ${flat.flat_number}`),
+    body, actions:[
+      { label:'Cancel', value:null },
+      { label:'Save', kind:'primary', value:true, validate: () => {
+          if (pick.value === '__new' && !nameI.value.trim()){ err('A name is needed.'); nameI.focus(); return false; }
+          return true;
+        } }
+    ]});
+  if (!res) return;
+
+  const args = {
+    p_flat: flat.id,
+    p_person: pick.value === '__new' ? null : pick.value,
+    p_name: nameI.value.trim() || null, p_mobile: mob.input.value.trim() || null,
+    p_email: mailI.value.trim() || null, p_alt: altI.value.trim() || null,
+    p_from: fromI.value || todayISO()
+  };
+  try {
+    if (isTenant) await rpc('set_flat_tenant', { ...args, p_billed: pays.checked });
+    else          await rpc('set_flat_owner', args);
+    invalidate('owners','flats');
+    ok(isTenant ? `Tenant added to ${flat.flat_number}` : `Owner of ${flat.flat_number} saved`);
+    refresh();
+  } catch { /* toast */ }
+}
+
+async function moveOutDialog(flat, p){
+  const toI = el('input', { type:'date', value: todayISO() });
+  const res = await modal({ title:`${p.tenant_name} moved out of ${flat.flat_number}?`,
+    body: el('div', {},
+      field('Moved out on', toI),
+      el('p', { class:'hint', text: p.owner_id
+        ? `${p.tenant_name} is kept as a past tenant. ${p.tenant_billed ? `From now on ${p.owner_name}, the owner, receives the bill.` : ''}`
+        : `${p.tenant_name} is kept as a past tenant. There is no owner on record, so add one to keep this flat billed.` })),
+    actions:[{ label:'Cancel', value:null }, { label:'Record move-out', kind:'primary', value:true }] });
+  if (!res) return;
+  try {
+    await rpc('end_tenancy', { p_flat: flat.id, p_to: toI.value || todayISO() });
+    ok(`${p.tenant_name} moved out of ${flat.flat_number}`);
+    refresh();
+  } catch { /* toast */ }
+}
+
+/** Edit a person's contact details. Which flat they belong to is changed
+    on the flat's page, never here, so editing a phone number can never
+    move a bill or end an ownership by accident. */
+async function personDialog(personId){
+  const person = personId ? await one('owners', b => b.eq('id', personId)) : null;
+  const nameI = el('input', { type:'text', required:true, maxlength:'120', value: person?.name || '' });
+  const mob = mobileField(person?.mobile);
+  const mailI = el('input', { type:'email', value: person?.email || '' });
+  const altI  = el('input', { type:'text', value: person?.alt_contact || '' });
+  const noteI = el('textarea', { rows:2 });
+  noteI.value = person?.notes || '';
+
+  // A new person can be put into a flat in the same step — through the
+  // same functions the flat page uses, so an owner is never closed off.
+  let flatI = null, asI = null, paysI = null, linkBox = null;
+  if (!person){
+    const flats = await ref('flats');
+    flatI = select(flats.map(f => ({ value:f.id, label:`Flat ${f.flat_number}` })), { placeholder:'Not in a flat yet' });
+    asI = select([{ value:'OWNER', label:'Owner' }, { value:'TENANT', label:'Tenant' }], { value:'OWNER' });
+    paysI = el('input', { type:'checkbox' }); paysI.checked = true;
+    const paysRow = el('label', { class:'check', hidden:true }, paysI,
+      el('span', {}, el('b', { text:'The tenant pays the service charge' })));
+    asI.onchange = () => { paysRow.hidden = asI.value !== 'TENANT'; };
+    linkBox = el('fieldset', {}, el('legend', {}, 'Flat (optional)'),
+      el('div', { class:'grid g-form' }, field('Flat', flatI), field('As', asI)), paysRow,
+      el('p', { class:'hint', text:'Adding a tenant keeps the owner. Adding a new owner keeps the old one on record as a past owner.' }));
+  }
 
   const body = el('div', {},
     field('Name', nameI, { required:true }),
-    el('div', { class:'grid g-form' }, field('Mobile', mobI), field('Email', mailI)),
-    field('Alternate contact', altI),
-    el('fieldset', {}, el('legend', {}, 'Billing link'),
-      el('div', { class:'grid g-form' }, field('Flat', flatI), field('Relationship', relI)),
-      el('p', { class:'hint', text:'Whoever is linked here receives the bill and appears on the outstanding report.' })));
+    el('div', { class:'grid g-form' }, mob.el, field('Email', mailI)),
+    field('Alternate contact', altI, { hint:'Another number, or a relative to call if this one does not answer.' }),
+    field('Notes', noteI),
+    person ? null : linkBox);
 
-  const res = await modal({ title: owner ? 'Edit owner' : 'Add owner', body, actions:[
+  const res = await modal({ title: person ? `Edit ${person.name}` : 'Add a person', body, actions:[
     { label:'Cancel', value:null },
-    { label:'Save', kind:'primary',
-      validate: () => { if (!nameI.value.trim()){ err('A name is required.'); return false; } return true; }, value:true }
+    { label:'Save', kind:'primary', value:true,
+      validate: () => { if (!nameI.value.trim()){ err('A name is required.'); return false; } return true; } }
   ]});
   if (!res) return;
 
-  const payload = { name: nameI.value.trim(), mobile: mobI.value.trim() || null,
-                    email: mailI.value.trim() || null, alt_contact: altI.value.trim() || null };
+  const payload = { name: nameI.value.trim(), mobile: mob.input.value.trim() || null,
+                    email: mailI.value.trim() || null, alt_contact: altI.value.trim() || null,
+                    notes: noteI.value.trim() || null };
   try {
-    const saved = owner ? await update('owners', owner.id, payload) : await insert('owners', payload);
-    if (flatI.value && !linked.has(flatI.value)){
-      // close any previous billed occupancy on that flat, then open a new one
-      const current = await q('flat_occupancy', b => b.eq('flat_id', flatI.value).is('to_date', null).eq('is_billed', true)).catch(() => []);
-      for (const c of current) await update('flat_occupancy', c.id, { to_date: todayISO() });
-      await insert('flat_occupancy', {
-        flat_id: flatI.value, owner_id: saved.id, relation_type: relI.value,
-        is_billed: true, from_date: todayISO()
-      });
+    if (person) await update('owners', person.id, payload);
+    else {
+      const saved = await insert('owners', payload);
+      if (flatI?.value && saved){
+        const args = { p_flat: flatI.value, p_person: saved.id, p_from: todayISO() };
+        if (asI.value === 'TENANT') await rpc('set_flat_tenant', { ...args, p_billed: paysI.checked });
+        else                        await rpc('set_flat_owner', args);
+      }
     }
     invalidate('owners','flats');
-    ok('Saved'); refresh();
-  } catch { /* toast shown */ }
+    ok(`${payload.name} saved`);
+    refresh();
+  } catch { /* toast */ }
+}
+
+/* ==================================================================
+   PEOPLE — everyone on file, and what they are to which flat
+   ================================================================== */
+async function peopleView(){
+  const [people, flats, occ] = await Promise.all([
+    ref('owners', true), ref('flats'),
+    q('flat_occupancy', b => b.is('to_date', null)).catch(() => [])
+  ]);
+  const flatNo = (id) => flats.find(f => f.id === id)?.flat_number || '?';
+  const rolesOf = (pid) => occ.filter(o => o.owner_id === pid)
+    .map(o => `${flatNo(o.flat_id)} ${o.relation_type === 'TENANT' ? 'tenant' : 'owner'}${o.is_billed ? ' (pays)' : ''}`)
+    .join(', ');
+
+  const cols = [
+    { label:'Name', primary:true, key:'name' },
+    { label:'Flats', fmt: o => rolesOf(o.id) || '—', csv: o => rolesOf(o.id) },
+    { label:'Mobile', fmt: o => o.mobile || '—', csv: o => o.mobile },
+    { label:'Email', fmt: o => o.email || '—', csv: o => o.email },
+    { label:'', fmt: o => can('flats','edit')
+        ? el('button', { class:'btn small', text:'Edit', onclick: (e) => { e.stopPropagation(); personDialog(o.id); } })
+        : '' }
+  ];
+
+  const bar = el('div', { class:'toolbar' }, el('a', { class:'btn', href:'#/flats', text:'← Flats' }));
+  if (can('flats','add'))
+    bar.append(el('button', { class:'btn primary', text:'＋ Add person', onclick: () => personDialog(null) }));
+  bar.append(el('span', { class:'spacer' }));
+  if (can('flats','export'))
+    bar.append(el('button', { class:'btn small', text:'Export CSV', onclick: () => {
+      downloadCSV('people.csv', cols.slice(0,4), people); logEvent('EXPORT', { module:'flats', detail:'people' });
+    }}));
+
+  return el('div', {},
+    el('div', { class:'page-head' },
+      el('h1', { text:'Owners & tenants' }),
+      el('p', { class:'sub', text:'Everyone on file. To put someone into a flat as its owner or tenant, open the flat.' })),
+    bar,
+    table(cols, people, { empty:'Nobody recorded yet. Open a flat and add its owner.' }));
 }

@@ -4,9 +4,10 @@
 
 import { el, field, select, money, ok, err, table, badge, monthName,
          confirmBox, reasonBox, emptyState, modal } from '../core/ui.js';
-import { q, update, insert, rpc } from '../core/db.js';
+import { q, update, insert, rpc, isMissingFunction, friendly } from '../core/db.js';
 import { refresh } from '../core/router.js';
 import { can, ref, state, settings, invalidate, reloadSettings } from '../core/store.js';
+import { TONES, TONE_NAME, LANGS, composeMessage } from '../core/reminder.js';
 
 export async function render(){
   const s = settings();
@@ -107,6 +108,7 @@ export async function render(){
     page.append(el('div', { class:'btn-row' }, save));
   }
 
+  page.append(await remindersCard());
   page.append(await categoriesCard());
   page.append(await periodsCard());
   page.append(await resetCard());
@@ -129,11 +131,25 @@ async function resetCard(){
 
   let preview;
   try {
-    preview = await rpc('reset_preview', {});
-  } catch {
-    // Not a Super Admin. The card simply is not there, rather than being
-    // shown and then refusing — an offer you cannot accept is worse than
-    // no offer.
+    // silent: the two expected failures below are handled here, and a
+    // shared red toast for either of them is noise at best and alarming
+    // at worst.
+    preview = await rpc('reset_preview', {}, { silent: true });
+  } catch (e) {
+    // Two different failures used to land in the same empty div, which is
+    // how this screen came to show a red error and no button at all: the
+    // migration had not been run, and the card treated that exactly like
+    // "you are not allowed", disappearing without saying why.
+    if (isMissingFunction(e.original || e)){
+      card.append(el('p', { class:'small', text:
+        'This needs a database update that has not been run yet.' }));
+      card.append(el('p', { class:'small muted', text:
+        'In Supabase open the SQL Editor and run sql/070_reset.sql — or re-run '
+      + 'sql/BUNDLE_all.sql, which includes it and is safe to run twice. Then reload this page.' }));
+      return card;
+    }
+    // Genuinely not a Super Admin: no card. An offer you cannot accept is
+    // worse than no offer.
     return el('div');
   }
 
@@ -160,10 +176,16 @@ async function resetCard(){
         el('li', { text:`${n(m.assets)} assets (generator, lift, extinguishers)` }),
         el('li', { text:`${n(m.vendors)} vendors` })))));
 
-  card.append(el('p', { class:'small', html:
-    `<b>Never removed:</b> your ${n(k.user_accounts)} user accounts and their roles, the building settings, ` +
-    `${n(k.departments)} departments and ${n(k.categories)} categories, ${n(k.bank_accounts)} bank/cash accounts, ` +
-    `${n(k.funds)} funds. You cannot lock yourself out with this.` }));
+  // Built from elements rather than a string of markup. `html:` escapes
+  // whatever it is given unless it arrives via the html`` tag — which is
+  // the right default, and which quietly rendered "<b>Never removed:</b>"
+  // as visible characters when this was written as a plain string.
+  card.append(el('p', { class:'small' },
+    el('b', { text:'Never removed: ' }),
+    `your ${n(k.user_accounts)} user accounts and their roles, the building settings, `
+  + `${n(k.departments)} departments and ${n(k.categories)} categories, `
+  + `${n(k.bank_accounts)} bank/cash accounts, ${n(k.funds)} funds. `
+  + `You cannot lock yourself out with this.`));
 
   const run = async (scope, title, body) => {
     let word;
@@ -313,19 +335,29 @@ async function categoryDialog(cat, depts){
 
   // Changing the direction of a category that is already in use would
   // flip the sign of past entries in every report that groups by it.
-  let used = 0;
+  // If category_usage is unavailable — 080_roles.sql not run — we cannot
+  // tell a fresh category from one with sixty entries behind it. Lock the
+  // direction rather than guess: changing it on a used category flips the
+  // sign of past entries in every report that groups by it, and being
+  // unable to edit a field is a far smaller problem than that.
+  let used = 0, usageKnown = true;
   if (cat){
-    used = await rpc('category_usage', { p_category: cat.id }).catch(() => 0);
-    if (Number(used) > 0) kind.disabled = true;
+    try {
+      used = await rpc('category_usage', { p_category: cat.id }, { silent: true });
+    } catch { usageKnown = false; }
+    if (!usageKnown || Number(used) > 0) kind.disabled = true;
   }
 
   const body = el('div', {},
     field('Name', name, { required:true }),
     field('Department', dept, { required:true,
       hint:'Which part of the building this belongs to. It decides where the cost lands in the reports.' }),
-    field('Income or expense', kind, Number(used) > 0
-      ? { hint:`Fixed — ${used} entr${Number(used) === 1 ? 'y is' : 'ies are'} already filed under this. Hide it and make a new one instead.` }
-      : {}));
+    field('Income or expense', kind,
+      !usageKnown
+        ? { hint:'Locked until sql/080_roles.sql has been run — without it the app cannot check whether anything is already filed under this category.' }
+      : Number(used) > 0
+        ? { hint:`Fixed — ${used} entr${Number(used) === 1 ? 'y is' : 'ies are'} already filed under this. Hide it and make a new one instead.` }
+        : {}));
 
   const go = await modal({ title: cat ? 'Edit category' : 'A new category', body, actions:[
     { label:'Cancel', value:null },
@@ -358,4 +390,163 @@ async function toggleCategory(cat){
     ok(cat.is_active ? `${cat.name} hidden` : `${cat.name} back in use`);
     refresh();
   } catch { /* toast shown */ }
+}
+
+/* ---------------------------------------------------------------------
+   Reminder messages — what the Remind button on an unpaid flat sends.
+
+   The settings save on their own button, and only their own columns, so
+   this card can never stop the rest of Settings saving (or the other way
+   round) — including on a database that has not had 085 yet.
+   --------------------------------------------------------------------- */
+const PLACEHOLDERS = [
+  ['{name}', 'the person who pays (owner or tenant)'],
+  ['{flat}', 'flat number'],
+  ['{amount}', 'amount owed, e.g. 10,000'],
+  ['{months}', 'the months owed, e.g. Aug–Sep 2026'],
+  ['{deadline}', 'today plus the days to pay'],
+  ['{building}', 'building name'],
+  ['{how_to_pay}', 'your payment instructions — the line disappears if they are empty']
+];
+
+async function remindersCard(){
+  const editable = can('settings','edit');
+  const card = el('section', { class:'card', id:'reminder-settings' },
+    el('div', { class:'card-head' }, el('h2', { text:'Reminder messages' })),
+    el('p', { class:'muted small', text:'What the Remind button sends to a flat that owes service charge. The first reminder after a payment uses the gentle message, the second the follow-up, and every one after that the firm one. The tone and language can still be changed for any single reminder before it is sent.' }));
+
+  let templates;
+  try {
+    templates = await q('reminder_templates', b => b.order('tone').order('lang'), { silent:true });
+  } catch (e){
+    if (isMissingFunction(e.original || e)){
+      card.append(el('div', { class:'alert normal' }, el('div', { class:'a-body' },
+        el('div', { class:'a-title', text:'Reminders need a database update' }),
+        el('div', { class:'a-meta', text:'In Supabase open the SQL Editor and run sql/PATCH.sql — it is safe to run twice — then reload this page.' }))));
+      return card;
+    }
+    card.append(el('p', { class:'small muted', text: friendly(e.original || e) }));
+    return card;
+  }
+  const s = settings();
+
+  /* --- the three settings --- */
+  const howI = el('textarea', { rows:3, maxlength:'500',
+    placeholder:'e.g. bKash 01XXXXXXXXX (Payment), or deposit to the building account at the bank, or pay the manager in cash.' });
+  howI.value = s.reminder_how_to_pay || '';
+  const langI = select(LANGS, { value: s.reminder_language || 'en' });
+  const daysI = el('input', { type:'number', min:'1', max:'60', value: s.reminder_deadline_days ?? 7 });
+  for (const i of [howI, langI, daysI]) if (!editable) i.disabled = true;
+
+  card.append(
+    field('How to pay', howI, { hint:'Added to every message where {how_to_pay} appears. Leave empty to leave it out.' }),
+    el('div', { class:'grid g-form' },
+      field('Language to start in', langI),
+      field('Days to pay', daysI, { hint:'The firm message asks for payment by today plus this many days.' })));
+
+  if (editable){
+    const save = el('button', { class:'btn', text:'Save reminder settings' });
+    save.onclick = async () => {
+      const days = Number(daysI.value);
+      if (!Number.isInteger(days) || days < 1 || days > 60) return err('Days to pay must be a whole number from 1 to 60.');
+      save.disabled = true;
+      try {
+        await update('building_settings', true, {
+          reminder_how_to_pay: howI.value.trim() || null,
+          reminder_language: langI.value,
+          reminder_deadline_days: days
+        }, 'id');
+        await reloadSettings();
+        ok('Reminder settings saved');
+        refresh();
+      } catch { save.disabled = false; }
+    };
+    card.append(el('div', { class:'btn-row' }, save));
+  }
+
+  /* --- the six messages --- */
+  const byKey = new Map(templates.map(t => [`${t.tone}.${t.lang}`, t]));
+  const choices = [];
+  for (const t of TONES) for (const l of LANGS)
+    if (byKey.has(`${t.value}.${l.value}`))
+      choices.push({ value:`${t.value}.${l.value}`,
+        label:`${TONE_NAME[t.value]} — ${l.value === 'bn' ? 'Bangla' : 'English'}${byKey.get(`${t.value}.${l.value}`).body !== byKey.get(`${t.value}.${l.value}`).default_body ? ' (edited)' : ''}` });
+
+  const pick = select(choices, { value: choices[0]?.value });
+  const body = el('textarea', { rows:12, class:'rem-text', maxlength:'2000' });
+  if (!editable) body.readOnly = true;
+  const state_ = el('span', { class:'small muted' });
+  const preview = el('pre', { class:'rem-sent' });
+
+  // A pretend flat, so the preview reads like a real message.
+  const now_ = new Date();
+  const ym = (k) => { const d = new Date(now_.getFullYear(), now_.getMonth() - k, 1); return { year:d.getFullYear(), month:d.getMonth()+1, source:'MONTHLY', due:5000 }; };
+  const deadline = new Date(now_.getTime() + (Number(daysI.value) || 7) * 86400000);
+  const sampleCtx = () => ({
+    recipient_name: 'Mr. Karim', flat_number: 'A-101', outstanding: 10000,
+    months: [ym(1), ym(0)], deadline_date: deadline.toISOString().slice(0,10),
+    building_name: s.building_name || 'Our Building', how_to_pay: howI.value.trim(),
+    templates: { [pick.value]: body.value }
+  });
+  const paintPreview = () => {
+    const [tone, lang] = pick.value.split('.');
+    preview.textContent = composeMessage(sampleCtx(), tone, lang);
+    const t = byKey.get(pick.value);
+    state_.textContent = body.value === t.default_body ? 'Original wording' : (body.value === t.body ? 'Your edited wording' : 'Not saved yet');
+  };
+  const load = () => { body.value = byKey.get(pick.value)?.body || ''; paintPreview(); };
+  pick.onchange = load;
+  body.oninput = paintPreview;
+  howI.addEventListener('input', paintPreview);
+
+  const chips = el('div', { class:'chips' },
+    PLACEHOLDERS.map(([tok, what]) => el('button', { type:'button', class:'chip', title: what, text: tok, disabled: !editable,
+      onclick: () => {
+        const a = body.selectionStart ?? body.value.length, b = body.selectionEnd ?? a;
+        body.value = body.value.slice(0, a) + tok + body.value.slice(b);
+        body.focus(); body.selectionStart = body.selectionEnd = a + tok.length;
+        paintPreview();
+      } })));
+
+  card.append(el('h3', { text:'The messages', style:'margin:1.4rem 0 .5rem;padding-top:1rem;border-top:1px solid var(--line-soft)' }),
+    field('Message', pick),
+    el('div', { class:'field' }, el('span', {}, 'Wording ', state_), body),
+    el('p', { class:'hint', text:'Tap a word in braces to insert it where the cursor is. It is replaced with the real value when a reminder is sent.' }),
+    chips,
+    el('details', { class:'ph-help' }, el('summary', { text:'What each one becomes' }),
+      el('ul', {}, PLACEHOLDERS.map(([tok, what]) => el('li', {}, el('code', { text: tok }), ` — ${what}`)))),
+    el('div', { class:'field' }, el('span', { text:'Preview (a made-up flat owing two months)' }), preview));
+
+  if (editable){
+    const saveMsg = el('button', { class:'btn primary', text:'Save this message' });
+    saveMsg.onclick = async () => {
+      const text = body.value.replace(/\r\n/g, '\n');
+      if (!text.trim()) return err('A message cannot be empty. Use "Restore original" to go back to the wording it came with.');
+      if (!text.includes('{amount}') &&
+          !await confirmBox('No amount in the message', 'This message does not contain {amount}, so it will not say how much is owed. Save it anyway?', 'Save anyway'))
+        return;
+      const t = byKey.get(pick.value);
+      saveMsg.disabled = true;
+      try {
+        await update('reminder_templates', t.id, { body: text });
+        t.body = text;
+        ok(`${pick.selectedOptions[0].textContent.replace(' (edited)', '')} message saved`);
+        refresh();
+      } catch { saveMsg.disabled = false; }
+    };
+    const restore = el('button', { class:'btn', text:'Restore original' });
+    restore.onclick = async () => {
+      const t = byKey.get(pick.value);
+      if (t.body === t.default_body && body.value === t.default_body) return ok('This message already has its original wording.');
+      if (!await confirmBox('Restore the original wording?', 'Your wording for this message will be replaced with the one it came with.', 'Restore')) return;
+      try {
+        await update('reminder_templates', t.id, { body: t.default_body });
+        ok('Original wording restored');
+        refresh();
+      } catch { /* toast */ }
+    };
+    card.append(el('div', { class:'btn-row' }, saveMsg, restore));
+  }
+  load();
+  return card;
 }

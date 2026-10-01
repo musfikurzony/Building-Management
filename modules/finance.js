@@ -143,6 +143,11 @@ async function entryForm(){
 
   const toField   = field('Into account', toI, { required:true });
   const deptField = field('Department', deptI, { required:true });
+  const catNote = el('p', { class:'hint' },
+    'Money from a flat goes through ',
+    el('a', { href:'#/charges' }, 'Service Charge → Record payment'),
+    ' so it lands against that flat, settles the right month and produces a receipt. Entered here it would be counted twice.');
+  catNote.hidden = true;
   const catField  = field('Category', catI);
   const vendField = field('Vendor / payee', vendI);
   const flatField = field('Flat (optional)', flatI);
@@ -157,11 +162,24 @@ async function entryForm(){
     acctI.parentElement.querySelector('span').textContent = transfer ? 'From account' : 'Paid from / into';
     syncCategories();
   }
+  // Service charge income is not offered here at all. Recording it in the
+  // ledger creates money that belongs to no flat: the dashboard rises,
+  // the flat still reads as unpaid, and if the payment was also entered
+  // properly the month is counted twice. The database refuses it too —
+  // this only means nobody has to discover that by being refused.
+  const svcDeptId = (depts.find(d => d.code === 'SERVICE_CHARGE') || {}).id;
+
   function syncCategories(){
     const want = dirI.value;
-    const list = cats.filter(c => c.department_id === deptI.value && (c.txn_type === want || c.txn_type === 'BOTH'));
-    catI.replaceChildren(el('option', { value:'' }, list.length ? 'Choose a category' : 'No category set up for this'));
+    const blocked = want === 'INCOME' && deptI.value && deptI.value === svcDeptId;
+    const list = blocked ? []
+      : cats.filter(c => c.department_id === deptI.value && (c.txn_type === want || c.txn_type === 'BOTH'));
+    catI.replaceChildren(el('option', { value:'' },
+      blocked      ? 'Recorded in Service Charge instead'
+      : list.length ? 'Choose a category'
+                    : 'No category set up for this'));
     for (const c of list) catI.append(el('option', { value:c.id }, c.name));
+    catNote.hidden = !blocked;
   }
   dirI.onchange = syncDirection;
   deptI.onchange = syncCategories;
@@ -235,7 +253,7 @@ async function entryForm(){
       el('div', { class:'grid g-form' },
         field('Paid from / into', acctI, { hint:'Leave blank to use the default cash account' }),
         toField),
-      el('div', { class:'grid g-form' }, deptField, catField),
+      el('div', { class:'grid g-form' }, deptField, catField), catNote,
       el('div', { class:'grid g-form' }, vendField, flatField),
       el('div', { class:'grid g-form' },
         field('Reference number', refI),
