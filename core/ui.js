@@ -153,7 +153,9 @@ export function modal({ title, body, actions = [], onMount }){
     const scrim = el('div', { class:'modal-scrim', onclick: (e) => { if (e.target === scrim) close(null); } }, box);
     host.append(scrim);
     document.addEventListener('keydown', onKey);
-    if (onMount) onMount(box);
+    // close is passed so a dialog can finish itself — the reminder dialog
+    // closes once its message is handed to WhatsApp and recorded.
+    if (onMount) onMount(box, close);
     const first = box.querySelector('input,select,textarea,button');
     if (first) first.focus();
   });

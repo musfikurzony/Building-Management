@@ -45,8 +45,59 @@ export function friendly(e){
   if (/invalid schema|PGRST106|schema must be one of/i.test(m))
     return 'The database is not published to the API yet. In Supabase open '
          + 'Project Settings → API → Exposed schemas and add "bms", then reload this page.';
+  // A function the app knows about but the database has never heard of
+  // means one of the migration files was not run. Saying "does not exist"
+  // is true and useless; naming the file is what someone can act on.
+  if (isMissingFunction(e)){
+    const fn = (m.match(/bms\.([a-z_]+)/i) || [])[1] || '';
+    const file = MIGRATION_OF[fn]
+              || MIGRATION_OF[Object.keys(MIGRATION_OF).find(k => m.includes(k)) || ''];
+    return file
+      ? `This part of the app needs a database update that has not been run yet. `
+      + `In Supabase open the SQL Editor and run sql/${file} (or re-run sql/BUNDLE_all.sql, `
+      + `which includes it and is safe to run twice), then reload this page.`
+      : 'The database is missing something this screen needs. Re-run sql/BUNDLE_all.sql '
+      + 'in the Supabase SQL Editor, then reload this page.';
+  }
   return m;
 }
+
+/** Which migration file introduced which function. Used only to turn a
+    "does not exist" into an instruction. */
+const MIGRATION_OF = {
+  reset_preview:  '070_reset.sql',
+  reset_system:   '070_reset.sql',
+  create_role:    '080_roles.sql',
+  delete_role:    '080_roles.sql',
+  category_usage: '080_roles.sql',
+  // 085 adds tables, views and columns as well as functions, so the
+  // names to recognise include those.
+  set_flat_owner:        '085_people_reminders.sql',
+  set_flat_tenant:       '085_people_reminders.sql',
+  end_tenancy:           '085_people_reminders.sql',
+  set_billed_party:      '085_people_reminders.sql',
+  reminder_context:      '085_people_reminders.sql',
+  log_charge_reminder:   '085_people_reminders.sql',
+  v_flat_people:         '085_people_reminders.sql',
+  v_flat_reminders:      '085_people_reminders.sql',
+  charge_reminders:      '085_people_reminders.sql',
+  reminder_templates:    '085_people_reminders.sql',
+  reminder_how_to_pay:   '085_people_reminders.sql',
+  reminder_language:     '085_people_reminders.sql',
+  reminder_deadline_days:'085_people_reminders.sql',
+};
+
+/** True when the database has never heard of a function the app called —
+    i.e. a migration is missing, not a permission or data problem.
+    PostgREST reports it as PGRST202 with "in the schema cache"; a direct
+    Postgres error says "does not exist". Both mean the same thing. */
+export const isMissingFunction = (e) =>
+  /PGRST20[245]|could not find the (function|table|relation)|could not find the '.*' column|does not exist/i.test(
+    (e && (e.message || e.error_description || e.hint)) || '');
+
+/** The same, under the name that says what it now covers: a function,
+    table, view or column the code expects and the database lacks. */
+export const isMissingObject = isMissingFunction;
 
 /** True when the failure is "the bms schema is not exposed", which is a
     project setting rather than anything wrong with the data or the user. */
