@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Same fixture database as the browser suite, but driven at phone width.
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export PGHOST=${PGHOST:-127.0.0.1} PGPORT=${PGPORT:-5433} PGUSER=${PGUSER:-postgres}
+export PGOPTIONS='-c client_min_messages=warning'
+DB=bms_browser
+
+DB=$DB "$ROOT/scripts/localdb.sh" >/dev/null
+psql -q -d $DB -f "$ROOT/sql/test/harness.sql" >/dev/null
+psql -q -d $DB -f "$ROOT/sql/test/fixtures.sql" >/dev/null
+# A month owed, and a flat with both an owner and a paying tenant, so the
+# flat page and the Remind dialog are measured with real content in them.
+psql -q -v ON_ERROR_STOP=1 -d $DB >/dev/null <<'SQL'
+SELECT set_config('request.jwt.claim.sub', t.recall('admin'), false);
+SELECT bms.generate_monthly_charges(EXTRACT(year FROM CURRENT_DATE)::int, EXTRACT(month FROM CURRENT_DATE)::int);
+SELECT bms.set_flat_owner((SELECT id FROM bms.flats WHERE flat_number='A-101'), NULL,
+       'Mohammad Abdur Rahim Chowdhury', '01712345678', 'rahim.chowdhury@example.com', NULL, CURRENT_DATE - 400);
+SELECT bms.set_flat_tenant((SELECT id FROM bms.flats WHERE flat_number='A-101'), NULL,
+       'Karim Tenant', '+44 7700 900123', NULL, NULL, CURRENT_DATE - 30, true);
+SQL
+
+fuser -k 5198/tcp 2>/dev/null || true
+PGDATABASE=$DB node "$ROOT/scripts/devserver.mjs" 5198 > /tmp/devserver-mobile.log 2>&1 &
+SRV=$!
+trap 'kill $SRV 2>/dev/null || true' EXIT
+sleep 2
+CHROMIUM=/opt/pw-browsers/chromium-1194/chrome-linux/chrome BASE=http://localhost:5198 \
+  node "$ROOT/scripts/mobile-audit.mjs"

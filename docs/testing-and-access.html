@@ -1,0 +1,484 @@
+<title>Portal Trial Run</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&family=IBM+Plex+Mono:wght@400;600&display=swap">
+
+<style>
+/* ------------------------------------------------------------------
+   Palette: the portal's own deep green, so the document and the thing
+   it documents read as one system. Neutrals carry a green bias rather
+   than sitting at pure grey. Amber marks a decision that is the
+   reader's to make; red marks the one screen that destroys data.
+   ------------------------------------------------------------------ */
+:root{
+  --ink:#14231e;
+  --ink-2:#3e544c;
+  --muted:#6f8279;
+  --paper:#f6f7f4;
+  --surface:#ffffff;
+  --surface-2:#eceee9;
+  --line:#d8ded9;
+  --line-soft:#e8ece9;
+  --accent:#0d6b4f;
+  --accent-soft:#e3f0ea;
+  --amber:#8a5a12;
+  --amber-soft:#f8eeda;
+  --red:#9c3322;
+  --red-soft:#f8e6e1;
+  --shadow:0 1px 2px rgba(20,35,30,.05);
+  --pill-ink:#ffffff;
+
+  --display:"Bricolage Grotesque","Segoe UI",system-ui,sans-serif;
+  --body:"Source Serif 4","Noto Serif Bengali",Georgia,serif;
+  --mono:"IBM Plex Mono",ui-monospace,Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --ink:#e4ebe7; --ink-2:#b3c3bc; --muted:#879992;
+    --paper:#0e1613; --surface:#18221e; --surface-2:#212d28;
+    --line:#2c3a34; --line-soft:#222e29;
+    --accent:#4cbd93; --accent-soft:#13312a;
+    --amber:#d9a257; --amber-soft:#2f2412;
+    --red:#e08b78; --red-soft:#321c18;
+    --shadow:0 1px 2px rgba(0,0,0,.3);
+    --pill-ink:#0b1f19;
+  }
+}
+:root[data-theme="dark"]{
+  --ink:#e4ebe7; --ink-2:#b3c3bc; --muted:#879992;
+  --paper:#0e1613; --surface:#18221e; --surface-2:#212d28;
+  --line:#2c3a34; --line-soft:#222e29;
+  --accent:#4cbd93; --accent-soft:#13312a;
+  --amber:#d9a257; --amber-soft:#2f2412;
+  --red:#e08b78; --red-soft:#321c18;
+  --shadow:0 1px 2px rgba(0,0,0,.3);
+  --pill-ink:#0b1f19;
+}
+
+*{box-sizing:border-box}
+body{
+  margin:0;background:var(--paper);color:var(--ink);
+  font-family:var(--body);font-size:17px;line-height:1.6;
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:60rem;margin:0 auto;padding:2.2rem 1.15rem 5rem}
+
+/* ---------- masthead ---------- */
+.mast{border-bottom:2px solid var(--ink);padding-bottom:1.3rem;margin-bottom:2.2rem}
+.eyebrow{
+  font-family:var(--mono);font-size:.7rem;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--accent);margin:0 0 .7rem;
+}
+.mast h1{
+  font-family:var(--display);font-weight:800;font-size:clamp(2rem,6vw,3.1rem);
+  line-height:1.02;letter-spacing:-.022em;margin:0 0 .6rem;text-wrap:balance;
+}
+.standfirst{font-size:1.06rem;color:var(--ink-2);max-width:44ch;margin:0}
+
+h2{
+  font-family:var(--display);font-weight:700;font-size:clamp(1.3rem,3.4vw,1.75rem);
+  letter-spacing:-.014em;margin:3.2rem 0 .3rem;text-wrap:balance;
+}
+h2 + .lede{color:var(--muted);margin:0 0 1.4rem;font-size:.97rem;max-width:62ch}
+h3{font-family:var(--display);font-weight:600;font-size:1.04rem;margin:1.8rem 0 .5rem;letter-spacing:-.008em}
+p{max-width:66ch}
+a{color:var(--accent)}
+code,kbd{
+  font-family:var(--mono);font-size:.855em;background:var(--surface-2);
+  padding:.1em .38em;border-radius:4px;
+}
+strong{font-weight:600}
+
+.rule{height:1px;background:var(--line);border:0;margin:3rem 0 0}
+
+/* ---------- the numbered track ----------
+   Numbering here is not decoration: the steps depend on each other.
+   You cannot run a salary before there is a member of staff. */
+.track{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:0}
+.track > li{
+  display:grid;grid-template-columns:2.6rem 1fr;gap:0 1rem;
+  padding:1.15rem 0;border-top:1px solid var(--line-soft);
+}
+.track > li:first-child{border-top:0}
+.num{
+  font-family:var(--mono);font-size:.82rem;font-weight:600;color:var(--accent);
+  padding-top:.28rem;font-variant-numeric:tabular-nums;
+}
+.step-body > :first-child{margin-top:0}
+.step-body > :last-child{margin-bottom:0}
+.step-body h3{margin-top:0}
+.where{
+  font-family:var(--mono);font-size:.76rem;color:var(--muted);
+  display:block;margin:.15rem 0 .5rem;
+}
+.expect{
+  border-left:2px solid var(--accent);background:var(--accent-soft);
+  padding:.55rem .8rem;margin:.7rem 0 0;font-size:.93rem;color:var(--ink);
+  border-radius:0 5px 5px 0;
+}
+.expect b{font-family:var(--display);font-weight:600;font-size:.82rem;
+  letter-spacing:.05em;text-transform:uppercase;color:var(--accent);
+  display:block;margin-bottom:.15rem}
+
+/* ---------- notes ---------- */
+.note{
+  border:1px solid var(--line);background:var(--surface);border-radius:7px;
+  padding:.9rem 1.05rem;margin:1.2rem 0;box-shadow:var(--shadow);
+}
+.note.warn{border-color:var(--amber);background:var(--amber-soft)}
+.note.stop{border-color:var(--red);background:var(--red-soft)}
+.note p{margin:.35rem 0}
+.note > :first-child{margin-top:0}
+.note > :last-child{margin-bottom:0}
+.note-label{
+  font-family:var(--display);font-weight:700;font-size:.72rem;letter-spacing:.09em;
+  text-transform:uppercase;margin:0 0 .3rem;
+}
+.warn .note-label{color:var(--amber)}
+.stop .note-label{color:var(--red)}
+.note .note-label{color:var(--accent)}
+
+/* ---------- tables ---------- */
+.tablewrap{overflow-x:auto;margin:1.1rem 0;border:1px solid var(--line);border-radius:7px;background:var(--surface)}
+table{border-collapse:collapse;width:100%;font-size:.9rem;min-width:30rem}
+th,td{text-align:left;padding:.6rem .8rem;border-bottom:1px solid var(--line-soft);vertical-align:top}
+thead th{
+  font-family:var(--display);font-weight:600;font-size:.72rem;letter-spacing:.07em;
+  text-transform:uppercase;color:var(--muted);background:var(--surface-2);
+  border-bottom:1px solid var(--line);white-space:nowrap;
+}
+tbody tr:last-child td{border-bottom:0}
+td.num-col{font-family:var(--mono);font-variant-numeric:tabular-nums;white-space:nowrap}
+.role-name{font-family:var(--display);font-weight:600}
+
+/* ---------- option cards ----------
+   Only these are cards. Everything else on the page is prose with rules,
+   because only these are things to choose between. */
+.options{display:grid;gap:1rem;margin:1.4rem 0}
+@media (min-width:46rem){ .options{grid-template-columns:1fr 1fr} }
+.opt{
+  border:1px solid var(--line);border-radius:8px;background:var(--surface);
+  padding:1.1rem 1.15rem;display:flex;flex-direction:column;gap:.5rem;
+  box-shadow:var(--shadow);
+}
+.opt.pick{border-color:var(--accent);border-width:2px;padding:1.05rem 1.1rem}
+.opt-head{display:flex;align-items:baseline;gap:.6rem;flex-wrap:wrap}
+.opt-key{
+  font-family:var(--mono);font-size:.74rem;font-weight:600;color:var(--muted);
+  letter-spacing:.08em;
+}
+.opt h3{margin:0;font-size:1.06rem}
+.pill{
+  font-family:var(--display);font-size:.66rem;font-weight:700;letter-spacing:.08em;
+  text-transform:uppercase;background:var(--accent);color:var(--pill-ink);
+  padding:.16rem .48rem;border-radius:99px;
+}
+.opt p{margin:0;font-size:.93rem;color:var(--ink-2);max-width:none}
+.opt dl{display:grid;grid-template-columns:auto 1fr;gap:.2rem .7rem;margin:.3rem 0 0;font-size:.86rem}
+.opt dt{font-family:var(--mono);font-size:.7rem;letter-spacing:.06em;text-transform:uppercase;
+  color:var(--muted);padding-top:.18rem}
+.opt dd{margin:0;color:var(--ink-2)}
+
+ul.plain{padding-left:1.1rem;max-width:66ch}
+ul.plain li{margin:.3rem 0}
+
+.credit{
+  margin-top:4rem;padding-top:1.2rem;border-top:1px solid var(--line);
+  font-family:var(--mono);font-size:.74rem;color:var(--muted);text-align:center;
+}
+@media (prefers-reduced-motion:no-preference){ html{scroll-behavior:smooth} }
+</style>
+
+<div class="wrap">
+
+<header class="mast">
+  <p class="eyebrow">Building Management &amp; Finance Portal</p>
+  <h1>Trying it out, then starting for real</h1>
+  <p class="standfirst">Four things: what changed on the phone, how to test the whole system with invented numbers in about twenty minutes, how to wipe those numbers cleanly, and a decision about staff access that needs your approval.</p>
+</header>
+
+<h2>First — three things before you test</h2>
+<p class="lede">None of these are code. They are done once, in Supabase and in the app.</p>
+
+<ol class="track">
+  <li>
+    <span class="num">01</span>
+    <div class="step-body">
+      <h3>Run the two new scripts</h3>
+      <span class="where">Supabase → SQL Editor</span>
+      <p><code>sql/070_reset.sql</code> puts the <strong>Start fresh</strong> buttons at the bottom of Settings. <code>sql/080_roles.sql</code> adds custom roles <em>and closes the privilege hole described further down</em> — run it whether or not you ever want a custom role. Re-running the whole <code>BUNDLE_all.sql</code> does both, and is still safe to run twice.</p>
+    </div>
+  </li>
+  <li>
+    <span class="num">02</span>
+    <div class="step-body">
+      <h3>Clear the doubled categories</h3>
+      <span class="where">Supabase → SQL Editor</span>
+      <p>Run <code>sql/FIX_DUPLICATE_CATEGORIES.sql</code> once, if you have not already. It merges each duplicate into the one that keeps its history, then adds the index that stops them coming back.</p>
+    </div>
+  </li>
+  <li>
+    <span class="num">03</span>
+    <div class="step-body">
+      <h3>Fill in the building address</h3>
+      <span class="where">Portal → Settings → The building</span>
+      <p>It is still empty. The printed report letterhead uses it, so today your PDFs carry the building's name over a blank line where the address belongs.</p>
+    </div>
+  </li>
+</ol>
+
+<hr class="rule">
+
+<h2>The phone view</h2>
+<p class="lede">You reported the installed app showing the desktop layout and needing pinch-zoom. Here is what was actually wrong, and what to do if it persists.</p>
+
+<p>The app was deciding "phone or desktop" purely from the width the browser reported. That is right almost always, and wrong in one common case: <strong>Chrome on Android with "Desktop site" ticked lays the page out at about 980 pixels on a 360-pixel screen.</strong> Every width rule switches off, you get the laptop layout, and because an installed home-screen app inherits that setting, it looks permanent.</p>
+
+<p>The layout no longer depends on that number alone. It now considers your actual screen and, above everything, an explicit choice you can make yourself:</p>
+
+<div class="note">
+  <p class="note-label">The switch</p>
+  <p>Tap your <strong>initials, top right → View</strong>. It cycles <strong>Automatic → Mobile → Desktop</strong>. Setting it to <strong>Mobile</strong> forces the phone layout whatever the browser claims, and it is remembered on that device.</p>
+</div>
+
+<p>If it still opens wide before you touch anything, the browser setting is the cause and is worth turning off at the source: <strong>Chrome → ⋮ → uncheck "Desktop site"</strong>, then remove the app from your home screen and add it again so the installed copy picks up the change.</p>
+
+<p>Two other things changed for fingers rather than mice. Every button, menu row and form field on the phone layout is now at least 44 pixels tall, and text fields are set at 16 pixels — below that, iPhones zoom in automatically when you tap a field, which is its own source of "why did the page just zoom".</p>
+
+<div class="note">
+  <p class="note-label">How this is now checked</p>
+  <p>All 145 of the automated browser checks ran at laptop width, which is precisely why a phone-layout problem could survive every one of them. There is now a separate phone audit that loads all 21 screens at 360 and 390 pixels, names any element sticking out past the edge, and reproduces the forced-desktop case at 980 pixels to confirm the Mobile setting still wins.</p>
+</div>
+
+<hr class="rule">
+
+<h2>The twenty-minute test</h2>
+<p class="lede">This is the exact path I ran through the real screens, in order, and every step of it passed. Follow it with invented numbers, then wipe them at the end. Each step depends on the one before, so do not skip.</p>
+
+<ol class="track">
+  <li>
+    <span class="num">01</span>
+    <div class="step-body">
+      <h3>Add a member of staff</h3>
+      <span class="where">Staff → Add staff</span>
+      <p>Try a security guard: code <code>SEC-01</code>, monthly salary <strong>Tk 12,000</strong>, joined 1 January. Add a cleaner and the caretaker too if you want the salary run to look realistic.</p>
+      <div class="expect"><b>You should see</b> the guard on the staff list straight away.</div>
+    </div>
+  </li>
+  <li>
+    <span class="num">02</span>
+    <div class="step-body">
+      <h3>Run one month of salary</h3>
+      <span class="where">Salary → Generate a month</span>
+      <p>It builds from the staff list, so it only works once step 1 is done. Nothing is paid yet — this creates what is payable.</p>
+      <div class="expect"><b>You should see</b> a salary run for the month with each person's amount on it.</div>
+    </div>
+  </li>
+  <li>
+    <span class="num">03</span>
+    <div class="step-body">
+      <h3>Raise the month's service charges</h3>
+      <span class="where">Service Charge → Generate a month</span>
+      <p>This is the answer to your question about entering the monthly charge per flat: <strong>you do not enter 36 rows.</strong> You press this once and the system raises one charge per active flat, each at that flat's own rate — so A-101 at Tk 5,000 and A-102 at Tk 4,500 come out correctly without you typing either figure.</p>
+      <div class="expect"><b>You should see</b> one charge per active flat, dated this month.</div>
+    </div>
+  </li>
+  <li>
+    <span class="num">04</span>
+    <div class="step-body">
+      <h3>Take a payment from one flat</h3>
+      <span class="where">Service Charge → Record payment</span>
+      <p>Choose A-101 and enter a <em>part</em> payment — say Tk 3,000 against a Tk 5,000 charge. This is where each flat's own payment date lives: you record each one on the day it actually arrives, and the month it belongs to is worked out for you.</p>
+      <p>The account the money went into is now filled in for you from Settings, so recording thirty-six payments does not mean choosing the same cash account thirty-six times.</p>
+      <div class="expect"><b>You should see</b> Tk 2,000 still outstanding for A-101, and the payment applied to the oldest unpaid month first. Anything overpaid is held as advance and settles next month by itself.</div>
+    </div>
+  </li>
+  <li>
+    <span class="num">05</span>
+    <div class="step-body">
+      <h3>Enter the electricity bill</h3>
+      <span class="where">Finance / Ledger → + New entry</span>
+      <p>Expense · Department <strong>Utilities</strong> · Category <strong>Electricity (DESCO)</strong> · Tk 18,500 · paid by bank transfer. Water is under the same department as <strong>Water (WASA)</strong>, with gas and internet beside them.</p>
+      <div class="note warn" style="margin:.7rem 0 0">
+        <p class="note-label">Watch this one</p>
+        <p>The form has two buttons. <strong>Submit</strong> posts the entry to the ledger. <strong>Save as draft</strong> keeps it as a private note that will <em>not</em> appear in any report. If a figure you entered is missing from a report later, a draft is the first thing to check.</p>
+      </div>
+      <div class="expect"><b>You should see</b> the entry in the ledger with status <strong>POSTED</strong>.</div>
+    </div>
+  </li>
+  <li>
+    <span class="num">06</span>
+    <div class="step-body">
+      <h3>Enter some income that is not service charge</h3>
+      <span class="where">Finance / Ledger → + New entry</span>
+      <p>Income · Department <strong>Other</strong> · Category <strong>Other income</strong> · Tk 5,000, say roof antenna rent. Service-charge collection does not go here — step 4 already recorded that.</p>
+      <div class="expect"><b>You should see</b> both figures on the ledger, one in and one out.</div>
+    </div>
+  </li>
+  <li>
+    <span class="num">07</span>
+    <div class="step-body">
+      <h3>Log something operational</h3>
+      <span class="where">Generator → operation log, and Maintenance → new issue</span>
+      <p>Record a power cut and a generator run, and raise a maintenance issue such as a lobby light. These are the entries your caretaker will make from his phone, so try them <em>on</em> a phone.</p>
+      <div class="expect"><b>You should see</b> the generator hours, and the issue sitting at status OPEN.</div>
+    </div>
+  </li>
+  <li>
+    <span class="num">08</span>
+    <div class="step-body">
+      <h3>Read the reports</h3>
+      <span class="where">Reports</span>
+      <p>Set the date range to cover today. Income, expense and the net figure should reconcile with exactly what you entered — Tk 8,000 in and Tk 18,500 out, if you followed the numbers above.</p>
+      <div class="expect"><b>You should see</b> the electricity under Utilities and the antenna rent under Other, with no rounding oddities.</div>
+    </div>
+  </li>
+  <li>
+    <span class="num">09</span>
+    <div class="step-body">
+      <h3>Export both ways</h3>
+      <span class="where">Reports → Export Excel · Print / PDF</span>
+      <p><strong>Export Excel</strong> gives a real multi-sheet <code>.xlsx</code>. <strong>Print / PDF</strong> opens your browser's print dialog — choose "Save as PDF" — and produces the letterhead version with the building name and address at the top. This is the one that needs step 3 above done first.</p>
+      <div class="expect"><b>You should see</b> a workbook that opens in Excel, and a PDF that looks like a document rather than a screenshot of a web page.</div>
+    </div>
+  </li>
+  <li>
+    <span class="num">10</span>
+    <div class="step-body">
+      <h3>Try it as someone else</h3>
+      <span class="where">Users &amp; Roles</span>
+      <p>Make a second account, give it <strong>Caretaker</strong>, and sign in as that person on your phone. This is the most useful twenty seconds in the whole test: it shows you exactly what your caretaker will and will not see.</p>
+      <div class="expect"><b>You should see</b> nine menu items and no Finance approvals, no Bank, no Settings, no Users. An expense he enters goes to <em>pending approval</em> rather than straight into the ledger.</div>
+    </div>
+  </li>
+</ol>
+
+<hr class="rule">
+
+<h2>Starting fresh</h2>
+<p class="lede">At the bottom of Settings, visible only to a Super Admin. Two buttons, and a preview above them counting every record each one would remove.</p>
+
+<div class="tablewrap">
+<table>
+  <thead><tr><th>Button</th><th>Removes</th><th>Keeps</th></tr></thead>
+  <tbody>
+    <tr>
+      <td class="role-name">Clear all entries</td>
+      <td>Every transaction, service charge, payment, salary, budget, log, issue, fund movement and fixed deposit. Document numbering restarts at 1.</td>
+      <td>Your flats, owners, staff, assets and vendors — the building stays set up.</td>
+    </tr>
+    <tr>
+      <td class="role-name">Clear everything</td>
+      <td>All of the above, plus flats, owners, staff, assets, vendors and the audit history.</td>
+      <td>Only people and settings: user accounts, roles, building settings, departments, categories, bank accounts, funds.</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<p>After the test above, <strong>Clear all entries</strong> is almost certainly the one you want: it removes the invented money and leaves the 36 flats and the staff list you will have spent real time entering.</p>
+
+<div class="note stop">
+  <p class="note-label">What protects you</p>
+  <p>You must type <code>RESET</code> in capitals, and that is checked inside the database, not just in the browser. Only a Super Admin can do it — a Finance Manager with every money permission and a Tk 200,000 approval limit still cannot. It happens in one go or not at all. And it writes its own entry in the audit log, recording who did it and what the counts were beforehand — written <em>after</em> the log is cleared, so a wipe can never be the one event with no record of it.</p>
+  <p><strong>No user account or role is ever removed.</strong> You cannot lock yourself out with this.</p>
+</div>
+
+<hr class="rule">
+
+<h2>Staff access — approved and built</h2>
+<p class="lede">You chose <strong>B</strong>, and the categories screen. Both are done. Here is what was already there, what was added, and the hole that had to be closed first.</p>
+
+<div class="note stop">
+  <p class="note-label">A hole found while building this</p>
+  <p>Your live database has a privilege-escalation path in it today. Any account with the plain <strong>Admin</strong> role — not Super Admin — can create a role marked as full access, give it to themselves, and become a Super Admin, with the system reset attached. Two statements, no trick.</p>
+  <p>It has never mattered because nothing in the app offered to create a role. A <strong>New role</strong> button would have made it one click wide, so it is closed in the same change: <code>sql/080_roles.sql</code>. <strong>Run that file even if you never create a single role of your own.</strong></p>
+  <p>I found it by attempting it, not by reading the policy.</p>
+</div>
+
+<h3>What you can already do today</h3>
+<p>Seven roles ship with the system, and <strong>Users &amp; Roles → Roles &amp; permissions</strong> gives you a grid of every module against every action — view, add, edit, approve, export, cancel, waive, close, view sensitive, manage. Ticking a box writes a permission that the database enforces on every request, not something the browser merely hides.</p>
+
+<div class="tablewrap">
+<table>
+  <thead><tr><th>Role</th><th class="num-col">Permissions</th><th class="num-col">Can approve up to</th><th>Intended for</th></tr></thead>
+  <tbody>
+    <tr><td class="role-name">Super Admin</td><td class="num-col">all</td><td class="num-col">any amount</td><td>You. Keep it to one or two people.</td></tr>
+    <tr><td class="role-name">Admin</td><td class="num-col">94</td><td class="num-col">any amount</td><td>A second trusted person, without the power to reset.</td></tr>
+    <tr><td class="role-name">Finance Manager</td><td class="num-col">54</td><td class="num-col">Tk 200,000</td><td>Money, service charge, bank, reports, approvals.</td></tr>
+    <tr><td class="role-name">Manager</td><td class="num-col">61</td><td class="num-col">Tk 25,000</td><td>Day-to-day operations, limited financial reach.</td></tr>
+    <tr><td class="role-name">Caretaker</td><td class="num-col">19</td><td class="num-col">nothing</td><td>Enters generator, lift, cleaning, issues. Submits expenses; approves none.</td></tr>
+    <tr><td class="role-name">Committee Member</td><td class="num-col">29</td><td class="num-col">nothing</td><td>Looks, does not touch.</td></tr>
+    <tr><td class="role-name">Auditor</td><td class="num-col">35</td><td class="num-col">nothing</td><td>Reads everything including the audit log; changes nothing.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>Each role also carries a <em>ceiling</em> as well as a set of permissions, and one person can be given a personal limit that overrides their role's. A new sign-up sees nothing at all until you activate the account and give it a role.</p>
+
+<h3>What was added</h3>
+<p>A <strong>New role</strong> button on the Roles &amp; permissions screen. Name it, pick an existing role to copy the permissions from, set the two limits, create — then tick and untick. Roles you make carry a <em>yours</em> badge and a Remove button; the seven built-in ones carry <em>built in</em>, cannot be removed or recoded, and can still be renamed.</p>
+<p>Copying is the default because starting from nothing is 190 checkboxes, and the mistake people make there is forgetting to take something away, not forgetting to add it. "Like the caretaker, but only the generator" is how the job actually gets described, so that is the shape of the dialog.</p>
+<p>One rule now runs underneath all of it, inside the database: <strong>you cannot grant what you do not hold.</strong> Only a Super Admin can create or hand out a full-access role. A role's approval ceiling cannot exceed the ceiling of whoever sets it. And a permission can only be ticked onto a role by someone who holds it themselves — otherwise <code>users.manage</code> was a master key, and anyone with it could tick <code>finance.approve</code> onto their own role and walk around every approval limit in the building.</p>
+
+<h3>The four options, for the record</h3>
+
+<div class="options">
+  <div class="opt">
+    <div class="opt-head"><span class="opt-key">A</span><h3>Retune the seven roles</h3></div>
+    <p>Untick what a role should not reach. To let someone log the generator and nothing else, strip Caretaker down to Generator alone.</p>
+    <dl>
+      <dt>Build</dt><dd>None. Available now.</dd>
+      <dt>Catch</dt><dd>One shared definition — every caretaker gets the same. Fine for one person per job, awkward for two people doing different jobs.</dd>
+    </dl>
+  </div>
+
+  <div class="opt pick">
+    <div class="opt-head"><span class="opt-key">B</span><h3>Let you create your own roles</h3><span class="pill">Recommended</span></div>
+    <p>An <strong>Add role</strong> button: name it, start it as a copy of an existing role, then tick. "Generator Operator", "Cleaning Supervisor", "Mosque Treasurer" — as many as the building needs.</p>
+    <dl>
+      <dt>Build</dt><dd>Small. The permission grid, the limits and the enforcement all exist; this adds the button and a duplicate-from dialog.</dd>
+      <dt>Why</dt><dd>Each job gets its own definition, so changing one job's access never quietly changes another's.</dd>
+    </dl>
+  </div>
+
+  <div class="opt">
+    <div class="opt-head"><span class="opt-key">C</span><h3>Per-person exceptions</h3></div>
+    <p>Beyond their role, tick extra permissions for one named person.</p>
+    <dl>
+      <dt>Build</dt><dd>Moderate.</dd>
+      <dt>Catch</dt><dd>I would not make this the main mechanism. Once access is granted person by person, "why can Karim approve this?" stops having a short answer, which is the opposite of what an audited financial system wants.</dd>
+    </dl>
+  </div>
+
+  <div class="opt">
+    <div class="opt-head"><span class="opt-key">D</span><h3>Narrow by job, not just by screen</h3></div>
+    <p>Today access is per screen: someone who can open Work Monitoring sees cleaning <em>and</em> gardening. This would let the cleaning supervisor see only cleaning.</p>
+    <dl>
+      <dt>Build</dt><dd>Large — it changes what a row means, not just who can open a page.</dd>
+      <dt>Advice</dt><dd>Worth doing later if it turns out to matter. With one gardener and one or two cleaners, it may never.</dd>
+    </dl>
+  </div>
+</div>
+
+<div class="note">
+  <p class="note-label">Where that leaves D</p>
+  <p>Narrowing by job rather than by screen is still not built, and I still would not build it yet. With one gardener and one or two cleaners it may never earn the complexity. Ask for it the day two people doing different jobs are genuinely in each other's way.</p>
+</div>
+
+<h3>Categories</h3>
+<p>Also built, in Settings. Add a category, rename one, move it to another department, or hide it so it stops appearing in every dropdown.</p>
+<p><strong>Deleting is deliberately not offered.</strong> A category that has been used is attached to real transactions; removing it would either orphan them or quietly rewrite what a past month was spent on. Hiding is the honest operation, and the screen shows the usage count first, so "never used" and "attached to 60 entries" are not the same decision made blind. For the same reason, switching a category between income and expense locks once anything is filed under it — that would flip the sign of past entries in every report that groups by it.</p>
+
+<hr class="rule">
+
+<h2>Where things stand</h2>
+<ul class="plain">
+  <li><strong>542</strong> database checks across 9 suites — 64 attacking the reset, 39 attacking the role system from every direction an Admin could come at it.</li>
+  <li><strong>155</strong> browser checks driving the real app against a real database with security switched on.</li>
+  <li><strong>19</strong> steps of the walkthrough above, run end to end through the actual screens.</li>
+  <li>A phone audit across 21 screens at two handset widths, clean.</li>
+</ul>
+<p>Worth saying plainly: the walkthrough failed twice before it passed, and both were faults in my test rather than in the app — it clicked nothing where it thought it had clicked a button, and pressed "Save as draft" where it meant "Submit". One assertion in the new role suite was wrong too: I predicted a direct delete on the roles table would silently match nothing, and it actually refuses outright, because the app role holds no delete privilege there at all. Corrected to assert what happens rather than what I assumed. A test that fails for the wrong reason and one that passes for the wrong reason are the same mistake.</p>
+
+<p class="credit">Developed by Musfikur Rahman | Copyright © 2026</p>
+
+</div>
