@@ -14,6 +14,7 @@ import { q, one, rpc, logEvent } from './db.js';
 import { ref, settings, can } from './store.js';
 import { receiptImage, receiptPdf, shareFile } from './receipt.js';
 import { wireWhatsAppLink } from './whatsapp.js';
+import { attachmentsCard } from './attachments.js';
 
 const methodName = (m) => String(m || '').replace(/_/g, ' ');
 
@@ -166,7 +167,15 @@ export async function receiptDialog(paymentId){
         (r.digits ? '' : ' There is no WhatsApp-ready number on file, so WhatsApp will ask whom to send to.') })
     : null;
 
-  return modal({ title: `Receipt ${p.receipt_no || ''}`, body: el('div', {}, view, who, actions),
+  // The payment's proof (a bKash screenshot, a deposit slip) — for the
+  // committee's file, not part of the receipt the flat receives.
+  const proof = can('charges', 'view') ? attachmentsCard({
+    entityTable: 'payments', entityId: p.id, bucket: 'bms-receipts',
+    canAdd: can('charges', 'add') && !reversed, title: 'Proof of payment',
+    hint: 'A bKash or bank screenshot, or a deposit slip. Kept with the payment; not sent to the flat.',
+    entryDate: p.payment_date }) : null;
+
+  return modal({ title: `Receipt ${p.receipt_no || ''}`, body: el('div', {}, view, who, actions, proof),
                  actions: [{ label:'Done', value:null }] });
 }
 

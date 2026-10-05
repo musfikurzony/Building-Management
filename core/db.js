@@ -99,6 +99,8 @@ const MIGRATION_OF = {
   committee_info:        '087_community_backup.sql',
   backup_log:            '087_community_backup.sql',
   log_backup:            '087_community_backup.sql',
+  remove_attachment:     '088_storage_setup.sql',
+  uploaded_by_name:      '088_storage_setup.sql',
 };
 
 /** True when the database has never heard of a function the app called —
@@ -204,21 +206,65 @@ export async function compressImage(file, maxEdge = 1600, quality = 0.82){
   return new File([blob], file.name.replace(/\.[^.]+$/, '') + '.webp', { type:'image/webp' });
 }
 
+const TYPE_BY_EXT = {
+  jpg:'image/jpeg', jpeg:'image/jpeg', png:'image/png', webp:'image/webp', heic:'image/heic', heif:'image/heif',
+  pdf:'application/pdf', doc:'application/msword',
+  docx:'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+};
+export const MAX_UPLOAD = 10 * 1024 * 1024;
+
+/** What went wrong with a storage call, in words someone can act on. */
+export function storageMessage(e){
+  const m = String((e && (e.message || e.error)) || e || '');
+  if (/bucket not found/i.test(m))
+    return 'File storage is not set up yet. In Supabase open the SQL Editor and run sql/PATCH.sql (it creates the storage), then attach the file again.';
+  if (/row-level security|unauthori[sz]ed|permission denied/i.test(m))
+    return 'Your role is not allowed to attach files here. Ask an administrator.';
+  if (/maximum allowed size|too large|payload/i.test(m)) return 'That file is too large. The limit is 10 MB.';
+  if (/mime type|not supported/i.test(m)) return 'That kind of file is not accepted here. Use a photo (JPG or PNG) or a PDF.';
+  if (/failed to fetch|network/i.test(m)) return 'No connection. Check your internet and try again.';
+  return 'The file could not be uploaded: ' + m;
+}
+
+/**
+ * Store a file and record it against an entry. The picture is shrunk
+ * first (a 4 MB phone photo becomes ~200 KB); if the phone's format
+ * cannot be shrunk in the browser it goes as it is. Nothing is recorded
+ * unless the file really arrived, and nothing is left behind if the
+ * record cannot be written.
+ */
 export async function uploadAttachment(bucket, entityTable, entityId, file){
   if (!sb) return null;
-  const prepared = await compressImage(file);
-  if (prepared.size > 5 * 1024 * 1024) throw new Error('That file is larger than 5 MB.');
+  let prepared = file;
+  try { prepared = await compressImage(file); } catch { prepared = file; }
+  const ext = (prepared.name.split('.').pop() || '').toLowerCase();
+  const type = prepared.type || TYPE_BY_EXT[ext];
+  if (!type) throw new Error('That kind of file cannot be attached. Use a photo (JPG or PNG) or a PDF.');
+  if (prepared.type !== type) prepared = new File([prepared], prepared.name, { type });
+  if (prepared.size > MAX_UPLOAD) throw new Error('That file is larger than 10 MB. Take the photo again or scan the PDF at a lower resolution.');
+
   const now = new Date();
-  const ext = (prepared.name.split('.').pop() || 'bin').toLowerCase();
-  const path = `${now.getFullYear()}/${String(now.getMonth()+1).padStart(2,'0')}/${entityTable}/${entityId}/${crypto.randomUUID()}.${ext}`;
+  const path = `${now.getFullYear()}/${String(now.getMonth()+1).padStart(2,'0')}/${entityTable}/${entityId}/${crypto.randomUUID()}.${ext || 'bin'}`;
+  const { error: upErr } = await sb.storage.from(bucket).upload(path, prepared, { contentType: type });
+  if (upErr) throw new Error(storageMessage(upErr));
 
-  const { error: upErr } = await sb.storage.from(bucket).upload(path, prepared, { contentType: prepared.type });
-  if (upErr) fail(upErr);
+  try {
+    return await insert('attachments', {
+      bucket, storage_path: path, entity_table: entityTable, entity_id: entityId,
+      file_name: file.name, mime_type: type, size_bytes: prepared.size
+    });
+  } catch (e){
+    sb.storage.from(bucket).remove([path]).catch(() => {});
+    throw e;
+  }
+}
 
-  return insert('attachments', {
-    bucket, storage_path: path, entity_table: entityTable, entity_id: entityId,
-    file_name: file.name, mime_type: prepared.type, size_bytes: prepared.size
-  });
+/** The file itself, for showing a picture inside the page. */
+export async function attachmentBlob(bucket, path){
+  if (!sb) return null;
+  const { data, error } = await sb.storage.from(bucket).download(path);
+  if (error) throw new Error(storageMessage(error));
+  return data;
 }
 
 /** Short-lived signed URL. Never a public link. */
