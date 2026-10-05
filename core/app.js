@@ -16,7 +16,7 @@ import { watchLayout, cycleLayoutPref, layoutMenuLabel, layoutPref } from './lay
 watchLayout();
 
 const ICONS = {
-  dashboard:'▦', flats:'⌂', charges:'৳', finance:'☰', bank:'▤', reports:'▥',
+  dashboard:'▦', community:'❖', flats:'⌂', charges:'৳', finance:'☰', bank:'▤', reports:'▥',
   budget:'◎', reserve:'▣', generator:'⚡', lift:'⇅', fire:'△', maintenance:'✦',
   staff:'☺', salary:'◧', work:'✓', mosque:'☾', users:'⚑', audit:'⏱', settings:'⚙'
 };
@@ -155,7 +155,7 @@ function buildNav(){
 
   const groups = [
     ['', ['dashboard']],
-    ['Building', ['flats','charges']],
+    ['Building', ['community','flats','charges']],
     ['Operations', ['generator','lift','fire','maintenance','work','mosque']],
     ['People', ['staff','salary']],
     ['Money', ['finance','bank','reserve','budget','reports']],
@@ -186,7 +186,8 @@ function buildNav(){
   const preferred = can('finance','view') || can('charges','view')
     ? ['dashboard','charges','finance','flats']
     : ['dashboard','maintenance','generator','work'];
-  const tabCodes = preferred.filter(c => visible.some(m => m.code === c));
+  let tabCodes = preferred.filter(c => visible.some(m => m.code === c));
+  if (!tabCodes.length) tabCodes = visible.slice(0, 4).map(m => m.code);   // e.g. a Resident
   for (const code of tabCodes.slice(0,4)){
     const m = visible.find(x => x.code === code);
     tabs.append(el('a', { href:'#/' + code, 'data-module': code },
@@ -394,6 +395,13 @@ function chromeVisible(on){
 async function route(){
   if (state.status !== 'ready') return;
   const { route: r } = currentRoute();
+  // Someone without the dashboard (a Resident, say) lands on the first
+  // screen they may see rather than on "Not available to you".
+  if (r.module === 'dashboard' && !can('dashboard','view')){
+    const first = ROUTES.find(x => !x.hideInNav && can(x.module, 'view')
+      && state.modules.some(m => m.code === x.module && m.is_enabled));
+    if (first){ location.hash = '#/' + first.path; return; }
+  }
   markActive(r.module);
   await renderRoute(view);
 }

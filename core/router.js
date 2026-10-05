@@ -8,6 +8,7 @@ import { can, canAny, state } from './store.js';
 
 export const ROUTES = [
   { path:'dashboard', module:'dashboard', title:'Dashboard',        load: () => import('../modules/dashboard.js') },
+  { path:'community', module:'community', title:'Committee & Rules', load: () => import('../modules/community.js') },
   { path:'flats',     module:'flats',     title:'Flats & Owners',   load: () => import('../modules/flats.js') },
   { path:'charges',   module:'charges',   title:'Service Charge',   load: () => import('../modules/charges.js') },
   { path:'finance',   module:'finance',   title:'Finance / Ledger', load: () => import('../modules/finance.js') },

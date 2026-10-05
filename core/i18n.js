@@ -11,6 +11,7 @@ const STRINGS = {
   en: {},   // English is the fallback: keys resolve to the default passed in.
   bn: {
     'module.dashboard':'ড্যাশবোর্ড',
+    'module.community':'কমিটি ও নিয়মাবলি',
     'module.flats':'ফ্ল্যাট ও মালিক',
     'module.charges':'সার্ভিস চার্জ',
     'module.finance':'হিসাব',

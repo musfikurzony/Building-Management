@@ -92,6 +92,13 @@ const MIGRATION_OF = {
   // Only the new form of this one (paying straight out of a fund) is
   // missing before 086; the old form still exists.
   record_fund_movement:  '086_reports_funds.sql',
+  v_board_members:       '087_community_backup.sql',
+  board_members:         '087_community_backup.sql',
+  board_member_photos:   '087_community_backup.sql',
+  building_documents:    '087_community_backup.sql',
+  committee_info:        '087_community_backup.sql',
+  backup_log:            '087_community_backup.sql',
+  log_backup:            '087_community_backup.sql',
 };
 
 /** True when the database has never heard of a function the app called —
