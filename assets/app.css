@@ -435,3 +435,64 @@ html:not(.is-phone) .modal{border-radius:14px}
 .ph-help summary{cursor:pointer;color:var(--accent);min-height:var(--tap);display:flex;align-items:center}
 .ph-help li{margin:.2rem 0}
 @media print{ .person-acts,.seg,.chip{display:none} }
+
+/* ---------- receipts ---------- */
+.row-acts{display:inline-flex;flex-wrap:wrap;gap:.35rem}
+.receipt-actions{flex-wrap:wrap;margin-top:.8rem}
+.receipt-view.is-reversed{opacity:.75}
+/* "Print" on a receipt prints the receipt — not the page behind it. */
+@media print{
+  body.printing-receipt #app,
+  body.printing-receipt #toasts{display:none !important}
+  body.printing-receipt .modal-scrim{position:static;background:none;display:block;padding:0}
+  body.printing-receipt .modal{box-shadow:none;border:0;max-width:none;width:auto;max-height:none;overflow:visible;margin:0 auto}
+  body.printing-receipt .modal-head,
+  body.printing-receipt .modal .btn-row,
+  body.printing-receipt .modal .muted.small,
+  body.printing-receipt .receipt-actions{display:none !important}
+  body.printing-receipt #receiptBody{max-width:120mm;margin:10mm auto;border:1px solid #bbb;padding:8mm}
+}
+
+/* ---------- a list of choices, each with a sentence ---------- */
+.choice-list{display:flex;flex-direction:column;gap:.4rem}
+.choice{display:flex;gap:.6rem;align-items:flex-start;padding:.6rem .75rem;border:1px solid var(--line);border-radius:var(--radius);cursor:pointer;min-height:var(--tap)}
+.choice input{margin-top:.2rem;flex:none;width:1.1rem;height:1.1rem}
+.choice span{display:flex;flex-direction:column;gap:.1rem}
+.choice.on{border-color:var(--accent);background:var(--accent-soft)}
+
+/* ---------- reports: tabs, monthly report ---------- */
+.tabs{display:flex;gap:.3rem;flex-wrap:wrap;margin:0 0 .9rem;border-bottom:1px solid var(--line)}
+.tab{display:inline-flex;align-items:center;min-height:var(--tap);padding:0 1rem;text-decoration:none;color:var(--ink-2);
+  font-weight:600;border-bottom:3px solid transparent;margin-bottom:-1px}
+.tab.on{color:var(--accent);border-bottom-color:var(--accent)}
+.report-controls .ctl{flex:1 1 9rem;min-width:8rem}
+.report-controls .quick{display:flex;gap:.4rem;align-items:flex-end;padding-bottom:.1rem}
+.report-actions{display:flex;gap:.5rem;flex-wrap:wrap}
+.report-title{margin:.2rem 0 0}
+.report-period{margin:.1rem 0 .8rem}
+.report-table .dept-row td{font-weight:700;background:var(--surface-2)}
+.report-table .cat-row td:first-child{padding-left:1.6rem}
+.result dd{font-weight:700}
+.result dd.good{color:var(--accent)} .result dd.bad{color:var(--red)}
+.signoff{display:grid;grid-template-columns:repeat(3,1fr);gap:1.5rem;padding-top:2.4rem}
+.sign{text-align:center;font-size:.9rem}
+.sign-line{border-top:1px solid var(--ink-2);margin-bottom:.3rem}
+.no-detail .detail-page{display:none}
+.report-end{text-align:center;margin-top:1rem}
+@media (max-width:600px){ .signoff{grid-template-columns:1fr;gap:2.2rem} }
+@media print{
+  .tabs,.report-controls,.report-title,.report-period{display:none !important}
+  .page-break{break-before:page;page-break-before:always}
+  .report-table .dept-row td{background:#eef2f0 !important;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  .signoff{grid-template-columns:repeat(3,1fr) !important;break-inside:avoid;border:0}
+  .report .card{padding:.2rem 0}
+  .report h2{font-size:12pt;margin:.2rem 0}
+  .report h3{font-size:10.5pt}
+  .report .hint{font-size:8pt}
+}
+.nowrap{white-space:nowrap}
+@media print{
+  .detail-page table{font-size:8.5pt}
+  .detail-page th,.detail-page td{padding:2px 4px}
+  .detail-page td.mono{font-size:8pt}
+}

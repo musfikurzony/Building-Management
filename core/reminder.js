@@ -18,6 +18,7 @@ import { el, field, select, money, fdate, fdatetime, ok, err, modal, table, empt
 import { rpc, q, isMissingObject, friendly } from './db.js';
 import { can } from './store.js';
 import { refresh } from './router.js';
+import { wireWhatsAppLink } from './whatsapp.js';
 
 export const TONES = [
   { value:'GENTLE',    label:'Gentle — a first reminder' },
@@ -200,14 +201,16 @@ export async function reminderDialog(flatId){
   };
 
   // Real links, not buttons that call window.open after an await: a link
-  // the person taps is never blocked as a popup, on any phone, and on a
-  // phone it hands straight over to the WhatsApp or Messages app.
-  const wa  = el('a', { class:'btn primary', target:'_blank', rel:'noopener' });
+  // the person taps is never blocked as a popup, and on a phone it hands
+  // straight over to the WhatsApp or Messages app.
+  const wa  = el('a', { class:'btn primary' });
   const sms = el('a', { class:'btn' });
   const copy = el('button', { class:'btn', type:'button', text:'Copy text' });
   const syncLinks = () => {
     const msg = encodeURIComponent(text.value);
-    wa.href = ctx.mobile_wa ? `https://wa.me/${ctx.mobile_wa}?text=${msg}` : `https://wa.me/?text=${msg}`;
+    // On a phone this is whatsapp://, which opens the installed app; on a
+    // laptop it is wa.me. See core/whatsapp.js for why.
+    wireWhatsAppLink(wa, ctx.mobile_wa, text.value);
     wa.textContent = ctx.mobile_wa ? 'Send on WhatsApp' : 'Open WhatsApp (choose the contact)';
     // "?&body=" is understood by both Android and iPhone messaging apps.
     sms.href = ctx.mobile_wa ? `sms:+${ctx.mobile_wa}?&body=${msg}` : '#';

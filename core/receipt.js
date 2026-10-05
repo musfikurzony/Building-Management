@@ -128,7 +128,15 @@ function layout(g, r, paint, H){
   if (r.receiptNo) pair('Receipt no', r.receiptNo);
   if (r.date)      pair('Date',       r.date);
   if (r.flat)      pair('Flat',       r.flat);
+  if (r.from){
+    // A long name is cut rather than allowed to run over its label.
+    g.font = font(12, 500);
+    let name = String(r.from);
+    while (name.length > 4 && g.measureText(name).width > W - PAD * 2 - 100) name = name.slice(0, -2);
+    pair('Received from', name === String(r.from) ? name : name.trim() + '…');
+  }
   if (r.method)    pair('Method',     r.method);
+  if (r.reference) pair('Reference',  String(r.reference).slice(0, 28));
 
   if (rows){
     y -= 4; rule(); y += 16;
@@ -153,6 +161,21 @@ function layout(g, r, paint, H){
     g.fillText(r.footer || 'Thank you.', W / 2, y);
   }
   y += 18;
+
+  // A reversed payment's receipt can still be looked at, but must never be
+  // mistaken for proof of payment: it is stamped across the middle.
+  if (r.stamp && paint){
+    g.save();
+    g.translate(W / 2, H / 2);
+    g.rotate(-Math.PI / 9);
+    g.font = font(34, 800); g.textAlign = 'center';
+    g.fillStyle = 'rgba(156,51,34,.22)';
+    g.fillText(r.stamp, 0, 12);
+    g.strokeStyle = 'rgba(156,51,34,.45)'; g.lineWidth = 2;
+    const w = g.measureText(r.stamp).width + 24;
+    g.strokeRect(-w / 2, -26, w, 50);
+    g.restore();
+  }
 
   return y;
 }
@@ -198,5 +221,87 @@ export async function shareReceipt(blob, filename, text){
   a.href = url; a.download = filename;
   document.body.append(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+  return 'downloaded';
+}
+
+/* =====================================================================
+   The receipt as a PDF.
+
+   An A4 page with the receipt picture on it, made here rather than by a
+   PDF library (the Content Security Policy admits none, and one image on
+   one page is a few hundred bytes of PDF structure). A4 because a PDF is
+   what gets printed and filed; WhatsApp sends it as a document, which
+   keeps its full quality, where a photo would be recompressed.
+   ===================================================================== */
+export async function receiptPdf(pngBlob){
+  const img = await blobToImage(pngBlob);
+  const c = document.createElement('canvas');
+  c.width = img.naturalWidth; c.height = img.naturalHeight;
+  const g = c.getContext('2d');
+  g.fillStyle = '#ffffff'; g.fillRect(0, 0, c.width, c.height);   // JPEG has no transparency
+  g.drawImage(img, 0, 0);
+  const jpeg = new Uint8Array(await (await new Promise(res => c.toBlob(res, 'image/jpeg', 0.92))).arrayBuffer());
+  return new Blob([pdfWithImage(jpeg, c.width, c.height)], { type:'application/pdf' });
+}
+
+function blobToImage(blob){
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(blob);
+    const img = new Image();
+    img.onload = () => { URL.revokeObjectURL(url); resolve(img); };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Could not read the receipt image')); };
+    img.src = url;
+  });
+}
+
+/** One A4 page, one JPEG, centred near the top with a margin. */
+export function pdfWithImage(jpeg, pw, ph){
+  const A4W = 595.28, A4H = 841.89, M = 56;
+  // The receipt is narrow; drawn at its natural 3x size it would be tiny,
+  // stretched to the full width it would be huge. 300pt wide prints at
+  // about the size of a paper receipt and stays sharp.
+  let w = Math.min(300, A4W - 2 * M);
+  let h = w * ph / pw;
+  if (h > A4H - 2 * M){ h = A4H - 2 * M; w = h * pw / ph; }
+  const x = (A4W - w) / 2, y = A4H - M - h;
+  const f = (n) => n.toFixed(2);
+
+  const enc = new TextEncoder();
+  const parts = []; const offsets = []; let len = 0;
+  const push = (chunk) => { const b = typeof chunk === 'string' ? enc.encode(chunk) : chunk; parts.push(b); len += b.length; };
+  const obj = (n, body) => { offsets[n] = len; push(`${n} 0 obj\n`); for (const b of [].concat(body)) push(b); push('\nendobj\n'); };
+
+  push('%PDF-1.4\n%\xE2\xE3\xCF\xD3\n');
+  obj(1, '<< /Type /Catalog /Pages 2 0 R >>');
+  obj(2, '<< /Type /Pages /Kids [3 0 R] /Count 1 >>');
+  obj(3, `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${f(A4W)} ${f(A4H)}] ` +
+         '/Resources << /XObject << /Im0 4 0 R >> >> /Contents 5 0 R >>');
+  obj(4, [`<< /Type /XObject /Subtype /Image /Width ${pw} /Height ${ph} /ColorSpace /DeviceRGB ` +
+          `/BitsPerComponent 8 /Filter /DCTDecode /Length ${jpeg.length} >>\nstream\n`, jpeg, '\nendstream']);
+  const content = `q ${f(w)} 0 0 ${f(h)} ${f(x)} ${f(y)} cm /Im0 Do Q`;
+  obj(5, `<< /Length ${content.length} >>\nstream\n${content}\nendstream`);
+
+  const xref = len;
+  let table = 'xref\n0 6\n0000000000 65535 f \n';
+  for (let i = 1; i <= 5; i++) table += String(offsets[i]).padStart(10, '0') + ' 00000 n \n';
+  push(table + `trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`);
+
+  const out = new Uint8Array(len); let o = 0;
+  for (const b of parts){ out.set(b, o); o += b.length; }
+  return out;
+}
+
+/** Share a file through the phone's share sheet, or save it on a laptop. */
+export async function shareFile(blob, filename, type, text){
+  const file = new File([blob], filename, { type });
+  if (navigator.canShare && navigator.canShare({ files: [file] })){
+    try { await navigator.share({ files: [file], text }); return 'shared'; }
+    catch (e){ if (e && e.name === 'AbortError') return 'cancelled'; }
+  }
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1500);
   return 'downloaded';
 }

@@ -85,6 +85,13 @@ const MIGRATION_OF = {
   reminder_how_to_pay:   '085_people_reminders.sql',
   reminder_language:     '085_people_reminders.sql',
   reminder_deadline_days:'085_people_reminders.sql',
+  report_income_expense: '086_reports_funds.sql',
+  report_accounts:       '086_reports_funds.sql',
+  report_funds:          '086_reports_funds.sql',
+  report_service_charge: '086_reports_funds.sql',
+  // Only the new form of this one (paying straight out of a fund) is
+  // missing before 086; the old form still exists.
+  record_fund_movement:  '086_reports_funds.sql',
 };
 
 /** True when the database has never heard of a function the app called —
