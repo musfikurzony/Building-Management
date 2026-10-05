@@ -90,7 +90,7 @@ const OPS = { eq:'=', gt:'>', gte:'>=', lt:'<', lte:'<=', neq:'<>', like:'LIKE',
 
 function buildSelect(table, params){
   const where = [], args = [];
-  let order = '', limit = '';
+  let order = '', limit = '', offset = '';
 
   for (const [key, value] of params){
     if (key === 'select' || key === 'on_conflict' || key === 'columns') continue;
@@ -105,7 +105,7 @@ function buildSelect(table, params){
       continue;
     }
     if (key === 'limit'){ limit = ` LIMIT ${Number(value) || 100}`; continue; }
-    if (key === 'offset'){ continue; }
+    if (key === 'offset'){ offset = ` OFFSET ${Number(value) || 0}`; continue; }
 
     const dot = value.indexOf('.');
     const op  = value.slice(0, dot);
@@ -124,7 +124,7 @@ function buildSelect(table, params){
     }
   }
   const sql = `SELECT * FROM ${SCHEMA}."${table}"` +
-              (where.length ? ' WHERE ' + where.join(' AND ') : '') + order + limit;
+              (where.length ? ' WHERE ' + where.join(' AND ') : '') + order + limit + offset;
   return { sql, args };
 }
 

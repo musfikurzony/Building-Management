@@ -6503,6 +6503,693 @@ GRANT EXECUTE ON FUNCTION bms.log_charge_reminder(uuid,text,text,text,text) TO a
 
 
 -- =====================================================================
+-- BEGIN 086_reports_funds.sql
+-- =====================================================================
+
+-- =====================================================================
+-- 086_reports_funds.sql — the monthly report, and funds that can pay.
+--
+-- PART 1 — FUNDS THAT PAY FOR THINGS DIRECTLY
+-- -------------------------------------------
+-- Until now money could leave a fund only by moving to another of our
+-- own accounts (a transfer). Real reserves are spent: the lift motor is
+-- paid for straight out of the reserve account, and the LPG emergency
+-- fund buys a cylinder and is refilled from the next LPG collection.
+-- Doing that took two separate entries — an expense in Finance and an
+-- earmark withdrawal here — which is exactly the kind of pair that gets
+-- half-entered. record_fund_movement can now do both in one step:
+-- given a category, a withdrawal becomes a real EXPENSE out of the
+-- chosen account and a contribution a real INCOME into it, tied to the
+-- fund movement that explains it.
+--
+-- PART 2 — THE MONTHLY REPORT
+-- ---------------------------
+-- The figures a finance controller prints and files every month, each
+-- computed here so the printed page, the Excel file and the dashboard
+-- agree to the taka:
+--   report_income_expense   income and expense by department and category
+--   report_accounts         every account: opening, money in, money out, closing
+--   report_funds            every fund: opening, added, used, closing
+--   report_service_charge   billed, collected, collection %, outstanding
+-- All read-only, all behind reports.view.
+-- =====================================================================
+
+SET search_path = bms, public;
+
+-- ---------------------------------------------------------------------
+-- PART 1
+-- ---------------------------------------------------------------------
+DROP FUNCTION IF EXISTS bms.record_fund_movement(uuid, date, text, bms.money_amount, boolean, uuid, uuid, text, text);
+
+CREATE OR REPLACE FUNCTION bms.record_fund_movement(
+    p_fund uuid, p_date date, p_direction text, p_amount bms.money_amount,
+    p_cash_backed boolean DEFAULT false,
+    p_from_account uuid DEFAULT NULL, p_to_account uuid DEFAULT NULL,
+    p_purpose text DEFAULT NULL, p_notes text DEFAULT NULL,
+    p_category uuid DEFAULT NULL, p_method text DEFAULT NULL, p_vendor uuid DEFAULT NULL)
+RETURNS bms.fund_movements
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = bms, public, pg_temp AS $$
+DECLARE mv bms.fund_movements; t bms.transactions; f bms.funds; c bms.categories;
+        v_balance numeric(14,2); v_dir text; v_account uuid; v_desc text;
+BEGIN
+  PERFORM bms.assert_perm('reserve','add');
+  IF p_amount <= 0 THEN RAISE EXCEPTION 'Amount must be greater than zero'; END IF;
+
+  SELECT * INTO f FROM bms.funds WHERE id = p_fund;
+  IF NOT FOUND THEN RAISE EXCEPTION 'Fund not found'; END IF;
+
+  -- You cannot take out more than the fund holds.
+  IF p_direction IN ('WITHDRAWAL','TRANSFER_OUT') THEN
+    SELECT current_balance INTO v_balance FROM bms.v_fund_balances WHERE fund_id = p_fund;
+    IF p_amount > COALESCE(v_balance, 0) THEN
+      RAISE EXCEPTION 'The fund only holds %, so % cannot be taken out',
+        COALESCE(v_balance,0), p_amount;
+    END IF;
+  END IF;
+
+  v_desc := format('%s — %s', f.name, COALESCE(NULLIF(btrim(p_purpose),''),
+              CASE p_direction WHEN 'CONTRIBUTION' THEN 'reserve contribution'
+                               WHEN 'WITHDRAWAL'   THEN 'reserve withdrawal'
+                               ELSE lower(replace(p_direction,'_',' ')) END));
+
+  IF p_cash_backed AND p_category IS NOT NULL THEN
+    -- Paid straight out of the fund, or received straight into it.
+    IF p_direction NOT IN ('CONTRIBUTION','WITHDRAWAL') THEN
+      RAISE EXCEPTION 'Only money put in or taken out can be booked as income or expense';
+    END IF;
+    PERFORM bms.assert_perm('finance','add');
+    SELECT * INTO c FROM bms.categories WHERE id = p_category;
+    IF NOT FOUND THEN RAISE EXCEPTION 'Category not found'; END IF;
+    v_dir     := CASE p_direction WHEN 'WITHDRAWAL' THEN 'EXPENSE' ELSE 'INCOME' END;
+    v_account := CASE p_direction WHEN 'WITHDRAWAL' THEN p_from_account ELSE p_to_account END;
+    IF v_account IS NULL THEN
+      RAISE EXCEPTION '%', CASE v_dir WHEN 'EXPENSE' THEN 'Say which account the money was paid from'
+                                      ELSE 'Say which account the money was received into' END;
+    END IF;
+    IF c.txn_type NOT IN (v_dir, 'BOTH') THEN
+      RAISE EXCEPTION 'The category "%" is for %, not %', c.name, lower(c.txn_type), lower(v_dir);
+    END IF;
+    t := bms.create_transaction(
+          p_date, v_dir, c.department_id, c.id, v_desc, p_amount,
+          COALESCE(p_method, 'CASH'), v_account, NULL,
+          p_vendor, NULL, NULL, p_notes, true, 'reserve', p_fund);
+
+  ELSIF p_cash_backed AND p_direction <> 'INTEREST' THEN
+    -- Moved between two of our own accounts.
+    IF p_from_account IS NULL OR p_to_account IS NULL THEN
+      RAISE EXCEPTION 'A cash-backed movement needs the account it comes from and the account it goes to';
+    END IF;
+    IF p_from_account = p_to_account THEN
+      RAISE EXCEPTION 'A transfer needs two different accounts';
+    END IF;
+    t := bms.create_transaction(
+          p_date, 'TRANSFER', NULL, NULL, v_desc,
+          p_amount, 'BANK_TRANSFER', p_from_account, p_to_account,
+          NULL, NULL, NULL, p_notes, true, 'reserve', p_fund);
+  END IF;
+
+  INSERT INTO bms.fund_movements(fund_id, movement_date, direction, amount,
+                                 is_cash_movement, txn_id, purpose, notes, created_by)
+  VALUES (p_fund, p_date, p_direction, p_amount, p_cash_backed, t.id, p_purpose, p_notes, auth.uid())
+  RETURNING * INTO mv;
+  RETURN mv;
+END $$;
+
+REVOKE ALL ON FUNCTION bms.record_fund_movement(uuid,date,text,bms.money_amount,boolean,uuid,uuid,text,text,uuid,text,uuid) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION bms.record_fund_movement(uuid,date,text,bms.money_amount,boolean,uuid,uuid,text,text,uuid,text,uuid) TO authenticated;
+
+-- A fund with no account of its own is backed by the cash moved for it.
+-- Now that a fund can pay for things directly, that net can go below
+-- zero (the money came out of the general account), and a fund cannot
+-- hold less than nothing. Same view as 042, with that one floor.
+CREATE OR REPLACE VIEW bms.v_fund_balances WITH (security_invoker = true) AS
+WITH mv AS (
+  SELECT fund_id,
+         SUM(CASE WHEN direction IN ('CONTRIBUTION','INTEREST','TRANSFER_IN')
+                  THEN amount ELSE -amount END)::numeric(14,2) AS movement,
+         SUM(CASE WHEN is_cash_movement
+                  THEN CASE WHEN direction IN ('CONTRIBUTION','INTEREST','TRANSFER_IN')
+                            THEN amount ELSE -amount END
+                  ELSE 0 END)::numeric(14,2) AS cash_movement,
+         MAX(movement_date) AS last_movement
+    FROM bms.fund_movements GROUP BY fund_id
+)
+, bal AS (
+  SELECT f.id AS fund_id,
+         (f.opening_balance + COALESCE(mv.movement, 0))::numeric(14,2) AS current_balance,
+         COALESCE((SELECT SUM(fd.principal) FROM bms.fixed_deposits fd
+                    WHERE fd.fund_id = f.id AND fd.status = 'ACTIVE'), 0)::numeric(14,2)
+           AS held_in_deposits,
+         CASE WHEN f.account_id IS NOT NULL
+              THEN COALESCE((SELECT ab.current_balance FROM bms.v_account_balances ab
+                              WHERE ab.account_id = f.account_id), 0)
+              -- Money paid straight out of a fund with no account of its
+              -- own came from the general account; it cannot leave the
+              -- fund holding less than nothing.
+              ELSE GREATEST(COALESCE(mv.cash_movement, 0), 0)
+         END::numeric(14,2) AS held_in_account
+    FROM bms.funds f
+    LEFT JOIN mv ON mv.fund_id = f.id
+)
+SELECT f.id AS fund_id, f.code, f.name, f.fund_type, f.purpose,
+       f.opening_balance, f.target_amount, f.target_date, f.account_id, f.is_active,
+       COALESCE(mv.movement, 0)                                   AS movement,
+       b.current_balance,
+       b.held_in_deposits,
+       b.held_in_account,
+       (b.held_in_deposits + b.held_in_account)::numeric(14,2)    AS funded_amount,
+       GREATEST(b.current_balance - b.held_in_deposits - b.held_in_account, 0)::numeric(14,2)
+            AS unfunded_amount,
+       (b.held_in_deposits + b.held_in_account >= b.current_balance) AS is_funded,
+       mv.last_movement,
+       CASE WHEN f.target_amount > 0
+            THEN LEAST(100, ROUND(b.current_balance * 100.0 / f.target_amount, 1))
+       END AS progress_pct,
+       GREATEST(f.target_amount - b.current_balance, 0)::numeric(14,2) AS remaining_required
+  FROM bms.funds f
+  JOIN bal b ON b.fund_id = f.id
+  LEFT JOIN mv ON mv.fund_id = f.id;
+
+
+-- ---------------------------------------------------------------------
+-- PART 2 — the monthly report
+-- ---------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION bms._report_range(p_from date, p_to date) RETURNS void
+LANGUAGE plpgsql IMMUTABLE AS $$
+BEGIN
+  IF p_from IS NULL OR p_to IS NULL THEN RAISE EXCEPTION 'A report needs a start and an end date'; END IF;
+  IF p_to < p_from THEN RAISE EXCEPTION 'The end date is before the start date'; END IF;
+END $$;
+
+-- Income and expense, one row per department and category. Same rule as
+-- every other total: posted, not a transfer, not reversed.
+CREATE OR REPLACE FUNCTION bms.report_income_expense(p_from date, p_to date)
+RETURNS TABLE (direction text, department_id uuid, department_name text, department_sort int,
+               category_id uuid, category_name text, entries bigint, amount numeric(14,2))
+LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = bms, public, pg_temp AS $$
+BEGIN
+  PERFORM bms.assert_perm('reports','view');
+  PERFORM bms._report_range(p_from, p_to);
+  RETURN QUERY
+  SELECT t.direction, t.department_id,
+         COALESCE(d.name, 'Unclassified'), COALESCE(d.sort_order, 9999),
+         t.category_id, COALESCE(c.name, 'Uncategorised'),
+         COUNT(*), SUM(t.amount)::numeric(14,2)
+    FROM bms.transactions t
+    LEFT JOIN bms.departments d ON d.id = t.department_id
+    LEFT JOIN bms.categories  c ON c.id = t.category_id
+   WHERE t.status = 'POSTED' AND t.direction IN ('INCOME','EXPENSE')
+     AND NOT t.is_reversal AND t.reversed_by_txn_id IS NULL
+     AND t.txn_date BETWEEN p_from AND p_to
+   GROUP BY t.direction, t.department_id, d.name, d.sort_order, t.category_id, c.name
+   ORDER BY t.direction DESC, COALESCE(d.sort_order, 9999), COALESCE(d.name,'Unclassified'),
+            SUM(t.amount) DESC;
+END $$;
+
+-- Every account over the period. Opening and closing follow the same
+-- rule as v_account_balances (opening balance + ledger), so the closing
+-- figure of a report that ends today is the balance on the dashboard.
+CREATE OR REPLACE FUNCTION bms.report_accounts(p_from date, p_to date)
+RETURNS TABLE (account_id uuid, code text, name text, kind text, is_active boolean,
+               opening numeric(14,2), money_in numeric(14,2), money_out numeric(14,2),
+               closing numeric(14,2))
+LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = bms, public, pg_temp AS $$
+BEGIN
+  PERFORM bms.assert_perm('reports','view');
+  PERFORM bms._report_range(p_from, p_to);
+  RETURN QUERY
+  WITH le AS (
+    SELECT l.account_id,
+           SUM(l.signed_amount) FILTER (WHERE l.entry_date <  p_from)                         AS before,
+           SUM(l.signed_amount) FILTER (WHERE l.entry_date BETWEEN p_from AND p_to AND l.signed_amount > 0) AS ins,
+           -SUM(l.signed_amount) FILTER (WHERE l.entry_date BETWEEN p_from AND p_to AND l.signed_amount < 0) AS outs
+      FROM bms.ledger_entries l
+     WHERE l.entry_date <= p_to
+     GROUP BY l.account_id
+  )
+  SELECT a.id, a.code, a.name, a.kind, a.is_active,
+         (CASE WHEN a.opening_date <= p_to THEN a.opening_balance ELSE 0 END + COALESCE(le.before,0))::numeric(14,2),
+         COALESCE(le.ins, 0)::numeric(14,2),
+         COALESCE(le.outs, 0)::numeric(14,2),
+         (CASE WHEN a.opening_date <= p_to THEN a.opening_balance ELSE 0 END
+            + COALESCE(le.before,0) + COALESCE(le.ins,0) - COALESCE(le.outs,0))::numeric(14,2)
+    FROM bms.accounts a
+    LEFT JOIN le ON le.account_id = a.id
+   WHERE a.is_active OR le.account_id IS NOT NULL
+   ORDER BY CASE a.kind WHEN 'BANK' THEN 1 WHEN 'MOBILE_WALLET' THEN 2 WHEN 'CASH' THEN 3 ELSE 4 END, a.name;
+END $$;
+
+-- Every fund over the period: the earmark at the start, what was added,
+-- what was used, the earmark at the end — and, for today, whether the
+-- money behind it is really there.
+CREATE OR REPLACE FUNCTION bms.report_funds(p_from date, p_to date)
+RETURNS TABLE (fund_id uuid, code text, name text, fund_type text, purpose text,
+               opening numeric(14,2), added numeric(14,2), used numeric(14,2),
+               closing numeric(14,2), target_amount numeric(14,2),
+               funded_now numeric(14,2), is_funded_now boolean, is_active boolean)
+LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = bms, public, pg_temp AS $$
+BEGIN
+  PERFORM bms.assert_perm('reports','view');
+  PERFORM bms._report_range(p_from, p_to);
+  RETURN QUERY
+  WITH m AS (
+    SELECT fm.fund_id,
+           SUM(CASE WHEN fm.direction IN ('CONTRIBUTION','INTEREST','TRANSFER_IN') THEN fm.amount ELSE -fm.amount END)
+             FILTER (WHERE fm.movement_date < p_from) AS before,
+           SUM(fm.amount) FILTER (WHERE fm.movement_date BETWEEN p_from AND p_to
+                                    AND fm.direction IN ('CONTRIBUTION','INTEREST','TRANSFER_IN')) AS added,
+           SUM(fm.amount) FILTER (WHERE fm.movement_date BETWEEN p_from AND p_to
+                                    AND fm.direction IN ('WITHDRAWAL','TRANSFER_OUT')) AS used
+      FROM bms.fund_movements fm
+     WHERE fm.movement_date <= p_to
+     GROUP BY fm.fund_id
+  )
+  SELECT f.id, f.code, f.name, f.fund_type, f.purpose,
+         (CASE WHEN f.opening_date <= p_to THEN f.opening_balance ELSE 0 END + COALESCE(m.before,0))::numeric(14,2),
+         COALESCE(m.added,0)::numeric(14,2),
+         COALESCE(m.used,0)::numeric(14,2),
+         (CASE WHEN f.opening_date <= p_to THEN f.opening_balance ELSE 0 END
+            + COALESCE(m.before,0) + COALESCE(m.added,0) - COALESCE(m.used,0))::numeric(14,2),
+         f.target_amount::numeric(14,2),
+         fb.funded_amount, fb.is_funded, f.is_active
+    FROM bms.funds f
+    LEFT JOIN m ON m.fund_id = f.id
+    LEFT JOIN bms.v_fund_balances fb ON fb.fund_id = f.id
+   WHERE f.is_active OR m.fund_id IS NOT NULL
+   ORDER BY f.code;
+END $$;
+
+-- Service charge over the period. "Billed" is what was charged for the
+-- months that fall in the period; "collected against it" is what has been
+-- paid of those charges so far; "received" is cash that arrived in the
+-- period, whatever month it paid for.
+CREATE OR REPLACE FUNCTION bms.report_service_charge(p_from date, p_to date)
+RETURNS TABLE (billed numeric(14,2), paid_against_billed numeric(14,2), collection_pct numeric(6,1),
+               received_in_period numeric(14,2), receipts_in_period bigint,
+               flat_months bigint, paid_full bigint, paid_partial bigint, unpaid bigint,
+               outstanding_now numeric(14,2), advance_now numeric(14,2), flats_owing_now bigint)
+LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = bms, public, pg_temp AS $$
+BEGIN
+  PERFORM bms.assert_perm('reports','view');
+  PERFORM bms._report_range(p_from, p_to);
+  RETURN QUERY
+  WITH ch AS (
+    SELECT fc.net_payable, COALESCE(pa.paid, 0) AS paid
+      FROM bms.flat_charges fc
+      LEFT JOIN (SELECT flat_charge_id, SUM(amount) AS paid
+                   FROM bms.payment_allocations GROUP BY flat_charge_id) pa ON pa.flat_charge_id = fc.id
+     WHERE NOT fc.is_cancelled AND fc.charge_source <> 'OPENING'
+       AND make_date(fc.period_year, fc.period_month, 1) BETWEEN date_trunc('month', p_from)::date AND p_to
+  ), rc AS (
+    SELECT COALESCE(SUM(p.amount),0) AS amt, COUNT(*) AS n
+      FROM bms.payments p
+     WHERE p.status = 'ACTIVE' AND p.payment_date BETWEEN p_from AND p_to
+  ), du AS (
+    SELECT COALESCE(SUM(outstanding),0) AS o, COALESCE(SUM(advance),0) AS a,
+           COUNT(*) FILTER (WHERE outstanding > 0) AS n
+      FROM bms.v_flat_dues
+  )
+  SELECT COALESCE(SUM(ch.net_payable),0)::numeric(14,2),
+         COALESCE(SUM(LEAST(ch.paid, ch.net_payable)),0)::numeric(14,2),
+         CASE WHEN COALESCE(SUM(ch.net_payable),0) > 0
+              THEN ROUND(SUM(LEAST(ch.paid, ch.net_payable)) * 100.0 / SUM(ch.net_payable), 1)
+              ELSE 0 END::numeric(6,1),
+         (SELECT amt FROM rc)::numeric(14,2), (SELECT n FROM rc),
+         COUNT(ch.*), COUNT(*) FILTER (WHERE ch.paid >= ch.net_payable),
+         COUNT(*) FILTER (WHERE ch.paid > 0 AND ch.paid < ch.net_payable),
+         COUNT(*) FILTER (WHERE ch.paid = 0 AND ch.net_payable > 0),
+         (SELECT o FROM du)::numeric(14,2), (SELECT a FROM du)::numeric(14,2), (SELECT n FROM du)
+    FROM ch;
+END $$;
+
+REVOKE ALL ON FUNCTION bms._report_range(date,date)           FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION bms.report_income_expense(date,date)   FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION bms.report_accounts(date,date)         FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION bms.report_funds(date,date)            FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION bms.report_service_charge(date,date)   FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION bms._report_range(date,date)          TO authenticated;
+GRANT EXECUTE ON FUNCTION bms.report_income_expense(date,date)  TO authenticated;
+GRANT EXECUTE ON FUNCTION bms.report_accounts(date,date)        TO authenticated;
+GRANT EXECUTE ON FUNCTION bms.report_funds(date,date)           TO authenticated;
+GRANT EXECUTE ON FUNCTION bms.report_service_charge(date,date)  TO authenticated;
+
+-- ---------------------------------------------------------------------
+-- PART 3 — an LPG department, asked for by the building.
+--
+-- LPG billing stays in the separate LPG Ledger app. What lives here is
+-- only the LPG emergency money: the balance kept to buy a cylinder before
+-- the month's meter collection comes in, and refilled from it. Its own
+-- department keeps those entries in a line of their own on every report
+-- instead of mixed into the building's running costs. Seeded once; it is
+-- ordinary data afterwards — rename it, hide it, or add to it in Settings.
+-- ---------------------------------------------------------------------
+INSERT INTO bms.departments (code, name, sort_order)
+VALUES ('LPG', 'LPG (emergency fund)', 115)
+ON CONFLICT (code) DO NOTHING;
+
+INSERT INTO bms.categories (department_id, name, txn_type, sort_order)
+SELECT d.id, v.name, v.txn_type, v.sort_order
+  FROM bms.departments d
+  CROSS JOIN (VALUES
+    ('Cylinder bought from the emergency fund',     'EXPENSE', 10),
+    ('Emergency fund repaid from LPG collection',   'INCOME',  20)
+  ) AS v(name, txn_type, sort_order)
+ WHERE d.code = 'LPG'
+   AND NOT EXISTS (SELECT 1 FROM bms.categories c
+                    WHERE c.department_id = d.id AND c.name = v.name AND c.parent_id IS NULL);
+
+-- END 086_reports_funds.sql
+
+
+-- =====================================================================
+-- BEGIN 087_community_backup.sql
+-- =====================================================================
+
+-- =====================================================================
+-- 087_community_backup.sql — the building's committee, its rules, and
+-- a record of every backup taken.
+--
+-- PART 1 — COMMITTEE & RULES (module "community")
+-- -----------------------------------------------
+-- Who runs the building (chairman, vice chairman, secretaries, finance,
+-- advisors, operations — any position, any order, with a photo), and the
+-- rules they run it by: the constitution, building rules, committee
+-- decisions, notices and forms. Readable by every signed-in person whose
+-- role includes "Committee & Rules", which by default is every role; a
+-- new read-only Resident role gives a flat owner or tenant exactly this
+-- and nothing else.
+--
+-- Photos are kept in the row itself, shrunk to a small JPEG (about 30–60
+-- KB) by the app. A committee is a dozen faces: storing them inline means
+-- no storage bucket to set up, nothing to sign, and the backup carries
+-- them. Rule documents can be long PDFs, so those go to the private
+-- bms-documents bucket under community/, readable by anyone who may see
+-- the rules.
+--
+-- PART 2 — BACKUP LOG
+-- -------------------
+-- The Excel backup is made in the browser; this records that it was
+-- made — when, by whom, for which dates, how many rows — so the app can
+-- say "last backup 34 days ago" and nobody has to remember.
+-- =====================================================================
+
+SET search_path = bms, public;
+
+-- ---------------------------------------------------------------------
+-- Module, permissions, grants.
+-- ---------------------------------------------------------------------
+INSERT INTO bms.modules (code, name, icon, sort_order, phase, is_enabled)
+VALUES ('community', 'Committee & Rules', 'people', 15, 5, true)
+ON CONFLICT (code) DO NOTHING;
+
+INSERT INTO bms.permissions (module_code, action)
+SELECT 'community', a FROM unnest(ARRAY['view','add','edit','cancel','export']) a
+ON CONFLICT (module_code, action) DO NOTHING;
+
+-- A role for residents: the committee and the rules, nothing about money.
+INSERT INTO bms.roles (code, name, description, is_system, is_superuser, approve_limit, auto_post_limit, sort_order)
+VALUES ('RESIDENT', 'Resident', 'Flat owners and tenants: sees the committee and the building rules only.',
+        true, false, 0, 0, 80)
+ON CONFLICT (code) DO NOTHING;
+
+-- Admin manages it; every other built-in role reads it. (Granted once:
+-- re-running this file never re-adds a permission someone took away.)
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM bms.role_permissions rp JOIN bms.permissions p ON p.id = rp.permission_id
+                  WHERE p.module_code = 'community') THEN
+    INSERT INTO bms.role_permissions (role_id, permission_id)
+    SELECT r.id, p.id FROM bms.roles r JOIN bms.permissions p ON p.module_code = 'community'
+     WHERE r.code = 'ADMIN'
+        OR (r.code IN ('FINANCE_MANAGER','MANAGER','CARETAKER','COMMITTEE','AUDITOR','RESIDENT') AND p.action = 'view')
+    ON CONFLICT DO NOTHING;
+  END IF;
+END $$;
+
+-- ---------------------------------------------------------------------
+-- The committee's heading: its name, its term, a line of introduction.
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS bms.committee_info (
+  id          boolean PRIMARY KEY DEFAULT true CHECK (id),
+  title       text NOT NULL DEFAULT 'Management Committee' CHECK (length(btrim(title)) BETWEEN 1 AND 120),
+  term        text CHECK (term IS NULL OR length(term) <= 60),
+  intro       text CHECK (intro IS NULL OR length(intro) <= 1000),
+  updated_at  timestamptz NOT NULL DEFAULT now(),
+  updated_by  uuid REFERENCES auth.users(id)
+);
+INSERT INTO bms.committee_info (id) VALUES (true) ON CONFLICT DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS bms.board_members (
+  id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  name        text NOT NULL CHECK (length(btrim(name)) BETWEEN 1 AND 120),
+  position    text NOT NULL CHECK (length(btrim(position)) BETWEEN 1 AND 80),
+  sort_order  int  NOT NULL DEFAULT 100,
+  flat_id     uuid REFERENCES bms.flats(id) ON DELETE SET NULL,
+  phone       text CHECK (phone IS NULL OR length(phone) <= 40),
+  show_phone  boolean NOT NULL DEFAULT false,
+  email       text CHECK (email IS NULL OR length(email) <= 120),
+  about       text CHECK (about IS NULL OR length(about) <= 1000),
+  term_from   date,
+  term_to     date,
+  is_current  boolean NOT NULL DEFAULT true,
+  created_at  timestamptz NOT NULL DEFAULT now(),
+  created_by  uuid REFERENCES auth.users(id),
+  updated_at  timestamptz NOT NULL DEFAULT now(),
+  updated_by  uuid REFERENCES auth.users(id),
+  CONSTRAINT board_term_ck CHECK (term_to IS NULL OR term_from IS NULL OR term_to >= term_from)
+);
+CREATE INDEX IF NOT EXISTS board_members_order_idx ON bms.board_members(is_current, sort_order);
+
+-- The photo sits in a table of its own: the audit log records every
+-- change to a member, and a copy of a picture in every entry would make
+-- it enormous for no benefit. Changes of name and position are audited;
+-- a new picture is simply a new picture.
+CREATE TABLE IF NOT EXISTS bms.board_member_photos (
+  member_id   uuid PRIMARY KEY REFERENCES bms.board_members(id) ON DELETE CASCADE,
+  photo       text NOT NULL CHECK (photo LIKE 'data:image/%' AND length(photo) <= 400000),
+  updated_at  timestamptz NOT NULL DEFAULT now(),
+  updated_by  uuid REFERENCES auth.users(id)
+);
+
+CREATE TABLE IF NOT EXISTS bms.building_documents (
+  id             uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  title          text NOT NULL CHECK (length(btrim(title)) BETWEEN 1 AND 200),
+  category       text NOT NULL DEFAULT 'RULES'
+                 CHECK (category IN ('CONSTITUTION','RULES','DECISION','NOTICE','FORM','OTHER')),
+  summary        text CHECK (summary IS NULL OR length(summary) <= 600),
+  body           text CHECK (body IS NULL OR length(body) <= 200000),
+  effective_date date,
+  version_label  text CHECK (version_label IS NULL OR length(version_label) <= 40),
+  file_path      text,
+  file_name      text,
+  file_mime      text,
+  file_size      bigint CHECK (file_size IS NULL OR file_size > 0),
+  is_published   boolean NOT NULL DEFAULT true,
+  is_pinned      boolean NOT NULL DEFAULT false,
+  sort_order     int NOT NULL DEFAULT 100,
+  created_at     timestamptz NOT NULL DEFAULT now(),
+  created_by     uuid REFERENCES auth.users(id),
+  updated_at     timestamptz NOT NULL DEFAULT now(),
+  updated_by     uuid REFERENCES auth.users(id),
+  CONSTRAINT document_file_ck CHECK ((file_path IS NULL) = (file_name IS NULL)),
+  CONSTRAINT document_has_content_ck CHECK (body IS NOT NULL OR file_path IS NOT NULL OR summary IS NOT NULL)
+);
+CREATE INDEX IF NOT EXISTS building_documents_cat_idx ON bms.building_documents(category, is_pinned DESC, sort_order);
+
+-- Who and when, stamped by the database rather than trusted from the app.
+CREATE OR REPLACE FUNCTION bms.community_touch() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = bms, public, pg_temp AS $$
+BEGIN
+  NEW.updated_at := now();
+  NEW.updated_by := COALESCE(auth.uid(), NEW.updated_by);
+  IF TG_OP = 'INSERT' AND TG_TABLE_NAME IN ('board_members','building_documents') THEN
+    NEW.created_by := COALESCE(auth.uid(), NEW.created_by);
+    NEW.created_at := now();
+  END IF;
+  RETURN NEW;
+END $$;
+
+DROP TRIGGER IF EXISTS trg_committee_info_touch ON bms.committee_info;
+CREATE TRIGGER trg_committee_info_touch BEFORE INSERT OR UPDATE ON bms.committee_info
+  FOR EACH ROW EXECUTE FUNCTION bms.community_touch();
+DROP TRIGGER IF EXISTS trg_board_members_touch ON bms.board_members;
+CREATE TRIGGER trg_board_members_touch BEFORE INSERT OR UPDATE ON bms.board_members
+  FOR EACH ROW EXECUTE FUNCTION bms.community_touch();
+DROP TRIGGER IF EXISTS trg_board_member_photos_touch ON bms.board_member_photos;
+CREATE TRIGGER trg_board_member_photos_touch BEFORE INSERT OR UPDATE ON bms.board_member_photos
+  FOR EACH ROW EXECUTE FUNCTION bms.community_touch();
+DROP TRIGGER IF EXISTS trg_building_documents_touch ON bms.building_documents;
+CREATE TRIGGER trg_building_documents_touch BEFORE INSERT OR UPDATE ON bms.building_documents
+  FOR EACH ROW EXECUTE FUNCTION bms.community_touch();
+
+-- Every change is in the audit log, like everything else.
+DROP TRIGGER IF EXISTS trg_audit_board_members ON bms.board_members;
+CREATE TRIGGER trg_audit_board_members AFTER INSERT OR UPDATE OR DELETE ON bms.board_members
+  FOR EACH ROW EXECUTE FUNCTION bms.audit_trigger('community', 'name', 'NORMAL');
+DROP TRIGGER IF EXISTS trg_audit_building_documents ON bms.building_documents;
+CREATE TRIGGER trg_audit_building_documents AFTER INSERT OR UPDATE OR DELETE ON bms.building_documents
+  FOR EACH ROW EXECUTE FUNCTION bms.audit_trigger('community', 'title', 'NORMAL');
+DROP TRIGGER IF EXISTS trg_audit_committee_info ON bms.committee_info;
+CREATE TRIGGER trg_audit_committee_info AFTER UPDATE ON bms.committee_info
+  FOR EACH ROW EXECUTE FUNCTION bms.audit_trigger('community', 'title', 'LOW');
+
+-- Row level security.
+ALTER TABLE bms.committee_info     ENABLE ROW LEVEL SECURITY;
+ALTER TABLE bms.board_members      ENABLE ROW LEVEL SECURITY;
+ALTER TABLE bms.building_documents ENABLE ROW LEVEL SECURITY;
+ALTER TABLE bms.board_member_photos ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON bms.committee_info, bms.board_members, bms.building_documents, bms.board_member_photos FROM PUBLIC, anon;
+GRANT SELECT, UPDATE ON bms.committee_info TO authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON bms.board_members, bms.building_documents, bms.board_member_photos TO authenticated;
+
+DROP POLICY IF EXISTS board_member_photos_sel ON bms.board_member_photos;
+DROP POLICY IF EXISTS board_member_photos_ins ON bms.board_member_photos;
+DROP POLICY IF EXISTS board_member_photos_upd ON bms.board_member_photos;
+DROP POLICY IF EXISTS board_member_photos_del ON bms.board_member_photos;
+CREATE POLICY board_member_photos_sel ON bms.board_member_photos FOR SELECT TO authenticated
+  USING (bms.has_perm('community','view'));
+CREATE POLICY board_member_photos_ins ON bms.board_member_photos FOR INSERT TO authenticated
+  WITH CHECK (bms.has_perm('community','add') OR bms.has_perm('community','edit'));
+CREATE POLICY board_member_photos_upd ON bms.board_member_photos FOR UPDATE TO authenticated
+  USING (bms.has_perm('community','edit')) WITH CHECK (bms.has_perm('community','edit'));
+CREATE POLICY board_member_photos_del ON bms.board_member_photos FOR DELETE TO authenticated
+  USING (bms.has_perm('community','edit') OR bms.has_perm('community','cancel'));
+
+DROP POLICY IF EXISTS committee_info_sel ON bms.committee_info;
+DROP POLICY IF EXISTS committee_info_upd ON bms.committee_info;
+CREATE POLICY committee_info_sel ON bms.committee_info FOR SELECT TO authenticated
+  USING (bms.has_perm('community','view'));
+CREATE POLICY committee_info_upd ON bms.committee_info FOR UPDATE TO authenticated
+  USING (bms.has_perm('community','edit')) WITH CHECK (bms.has_perm('community','edit'));
+
+DROP POLICY IF EXISTS board_members_sel ON bms.board_members;
+DROP POLICY IF EXISTS board_members_ins ON bms.board_members;
+DROP POLICY IF EXISTS board_members_upd ON bms.board_members;
+DROP POLICY IF EXISTS board_members_del ON bms.board_members;
+-- The table itself is read only by those who edit it. Everyone else
+-- reads v_board_members, which leaves out a phone number or email the
+-- member has not agreed to show — left out by the database, so it never
+-- reaches a resident's browser at all.
+CREATE POLICY board_members_sel ON bms.board_members FOR SELECT TO authenticated
+  USING (bms.has_perm('community','edit'));
+CREATE POLICY board_members_ins ON bms.board_members FOR INSERT TO authenticated
+  WITH CHECK (bms.has_perm('community','add'));
+CREATE POLICY board_members_upd ON bms.board_members FOR UPDATE TO authenticated
+  USING (bms.has_perm('community','edit')) WITH CHECK (bms.has_perm('community','edit'));
+CREATE POLICY board_members_del ON bms.board_members FOR DELETE TO authenticated
+  USING (bms.has_perm('community','cancel'));
+
+CREATE OR REPLACE VIEW bms.v_board_members AS
+SELECT m.id, m.name, m.position, m.sort_order, m.flat_id, f.flat_number,
+       CASE WHEN m.show_phone OR bms.has_perm('community','edit') THEN m.phone END AS phone,
+       CASE WHEN m.show_phone OR bms.has_perm('community','edit') THEN m.email END AS email,
+       m.show_phone, m.about, m.term_from, m.term_to, m.is_current, m.updated_at,
+       EXISTS (SELECT 1 FROM bms.board_member_photos ph WHERE ph.member_id = m.id) AS has_photo
+  FROM bms.board_members m
+  LEFT JOIN bms.flats f ON f.id = m.flat_id
+ WHERE bms.has_perm('community','view');
+REVOKE ALL ON bms.v_board_members FROM PUBLIC, anon;
+GRANT SELECT ON bms.v_board_members TO authenticated;
+
+-- An unpublished document (a draft) is seen only by those who may edit.
+DROP POLICY IF EXISTS building_documents_sel ON bms.building_documents;
+DROP POLICY IF EXISTS building_documents_ins ON bms.building_documents;
+DROP POLICY IF EXISTS building_documents_upd ON bms.building_documents;
+DROP POLICY IF EXISTS building_documents_del ON bms.building_documents;
+CREATE POLICY building_documents_sel ON bms.building_documents FOR SELECT TO authenticated
+  USING (bms.has_perm('community','view') AND (is_published OR bms.has_perm('community','edit')));
+CREATE POLICY building_documents_ins ON bms.building_documents FOR INSERT TO authenticated
+  WITH CHECK (bms.has_perm('community','add'));
+CREATE POLICY building_documents_upd ON bms.building_documents FOR UPDATE TO authenticated
+  USING (bms.has_perm('community','edit')) WITH CHECK (bms.has_perm('community','edit'));
+CREATE POLICY building_documents_del ON bms.building_documents FOR DELETE TO authenticated
+  USING (bms.has_perm('community','cancel'));
+
+-- Rule files: the private bms-documents bucket, under community/ only.
+-- The bucket is created here if it is missing, PRIVATE, so this works
+-- without a trip to the Storage dashboard. Nothing else in the bucket
+-- becomes readable: these policies match community/ paths alone.
+DO $outer$
+BEGIN
+  IF to_regclass('storage.objects') IS NULL THEN
+    RAISE NOTICE 'No storage schema here — skipping the community file policies.';
+    RETURN;
+  END IF;
+  INSERT INTO storage.buckets (id, name, public) VALUES ('bms-documents', 'bms-documents', false)
+  ON CONFLICT (id) DO NOTHING;
+
+  EXECUTE 'DROP POLICY IF EXISTS "bms-documents_community_read"   ON storage.objects';
+  EXECUTE 'DROP POLICY IF EXISTS "bms-documents_community_write"  ON storage.objects';
+  EXECUTE 'DROP POLICY IF EXISTS "bms-documents_community_delete" ON storage.objects';
+  EXECUTE $sql$
+    CREATE POLICY "bms-documents_community_read" ON storage.objects FOR SELECT TO authenticated
+      USING (bucket_id = 'bms-documents' AND name LIKE 'community/%' AND bms.has_perm('community','view'));
+  $sql$;
+  EXECUTE $sql$
+    CREATE POLICY "bms-documents_community_write" ON storage.objects FOR INSERT TO authenticated
+      WITH CHECK (bucket_id = 'bms-documents' AND name LIKE 'community/%'
+                  AND (bms.has_perm('community','add') OR bms.has_perm('community','edit')));
+  $sql$;
+  EXECUTE $sql$
+    CREATE POLICY "bms-documents_community_delete" ON storage.objects FOR DELETE TO authenticated
+      USING (bucket_id = 'bms-documents' AND name LIKE 'community/%'
+             AND (bms.has_perm('community','edit') OR bms.has_perm('community','cancel')));
+  $sql$;
+END $outer$;
+
+-- ---------------------------------------------------------------------
+-- PART 2 — the backup log.
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS bms.backup_log (
+  id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  made_at     timestamptz NOT NULL DEFAULT now(),
+  made_by     uuid REFERENCES auth.users(id),
+  made_by_name text,
+  scope       text NOT NULL CHECK (scope IN ('ALL','RANGE')),
+  date_from   date,
+  date_to     date,
+  sheets      int  NOT NULL CHECK (sheets >= 0),
+  total_rows  int  NOT NULL CHECK (total_rows >= 0),
+  CONSTRAINT backup_range_ck CHECK (scope = 'ALL' OR (date_from IS NOT NULL AND date_to IS NOT NULL AND date_to >= date_from))
+);
+CREATE INDEX IF NOT EXISTS backup_log_made_idx ON bms.backup_log(made_at DESC);
+
+ALTER TABLE bms.backup_log ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON bms.backup_log FROM PUBLIC, anon, authenticated;
+GRANT SELECT ON bms.backup_log TO authenticated;
+DROP POLICY IF EXISTS backup_log_sel ON bms.backup_log;
+CREATE POLICY backup_log_sel ON bms.backup_log FOR SELECT TO authenticated
+  USING (bms.has_perm('reports','view'));
+
+DROP TRIGGER IF EXISTS trg_backup_log_no_delete ON bms.backup_log;
+CREATE TRIGGER trg_backup_log_no_delete BEFORE DELETE ON bms.backup_log
+  FOR EACH ROW EXECUTE FUNCTION bms.block_delete();
+
+CREATE OR REPLACE FUNCTION bms.log_backup(p_scope text, p_from date, p_to date, p_sheets int, p_rows int)
+RETURNS bms.backup_log
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = bms, public, pg_temp AS $$
+DECLARE r bms.backup_log;
+BEGIN
+  PERFORM bms.assert_perm('reports','export');
+  INSERT INTO bms.backup_log(made_by, made_by_name, scope, date_from, date_to, sheets, total_rows)
+  VALUES (auth.uid(), bms.actor_name(), p_scope,
+          CASE WHEN p_scope = 'RANGE' THEN p_from END, CASE WHEN p_scope = 'RANGE' THEN p_to END,
+          GREATEST(COALESCE(p_sheets, 0), 0), GREATEST(COALESCE(p_rows, 0), 0))
+  RETURNING * INTO r;
+  INSERT INTO bms.audit_log(actor_user_id, actor_name_snapshot, action, module_code, detail, severity)
+  VALUES (auth.uid(), bms.actor_name(), 'EXPORT', 'reports',
+          format('Backup downloaded (%s, %s sheets, %s rows)',
+                 CASE WHEN p_scope = 'RANGE' THEN p_from || ' to ' || p_to ELSE 'all records' END, p_sheets, p_rows),
+          'HIGH');
+  RETURN r;
+END $$;
+REVOKE ALL ON FUNCTION bms.log_backup(text,date,date,int,int) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION bms.log_backup(text,date,date,int,int) TO authenticated;
+
+-- END 087_community_backup.sql
+
+
+-- =====================================================================
 -- BEGIN 090_storage.sql
 -- =====================================================================
 

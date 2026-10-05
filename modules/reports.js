@@ -35,6 +35,10 @@ const now = new Date();
 export async function render({ params }){
   if (params && params[0] === 'annual')  return annual();
   if (params && params[0] === 'entries') return statement();
+  if (params && params[0] === 'backup'){
+    const { backupPage } = await import('./backup.js');
+    return backupPage(tabs);
+  }
   return monthly();
 }
 
@@ -45,7 +49,8 @@ function tabs(active){
   return el('nav', { class:'tabs', 'aria-label':'Reports' },
     t('#/reports', 'monthly', 'Monthly report'),
     t('#/reports/entries', 'entries', 'Search entries'),
-    t('#/reports/annual', 'annual', 'Annual summary'));
+    t('#/reports/annual', 'annual', 'Annual summary'),
+    t('#/reports/backup', 'backup', 'Backup'));
 }
 
 async function statement(){

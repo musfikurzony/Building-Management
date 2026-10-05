@@ -31,6 +31,18 @@ async function adminDashboard(){
     can('finance','view') ? q('v_financial_position').catch(() => []) : []
   ]);
 
+  // A backup older than a month (or none at all) is something to act on.
+  // Read quietly: before 087 there is no backup log and nothing to say.
+  if (can('reports','export')){
+    const lastBackup = await q('backup_log', b => b.order('made_at', { ascending:false }).limit(1), { silent:true }).catch(() => null);
+    if (lastBackup){
+      const daysAgo = lastBackup[0] ? Math.floor((Date.now() - new Date(lastBackup[0].made_at).getTime()) / 86400000) : null;
+      if (daysAgo === null || daysAgo > 31)
+        alerts.push({ severity:'NORMAL', link:'#/reports/backup', item_count: 1, backup: true,
+          title: daysAgo === null ? 'No backup taken yet — download one' : `Last backup was ${daysAgo} days ago — download a new one` });
+    }
+  }
+
   /* ---- alerts ---- */
   if (alerts.length){
     const box = el('section', { class:'card' });
@@ -39,7 +51,7 @@ async function adminDashboard(){
       box.append(el('a', { class:'alert ' + a.severity.toLowerCase(), href: a.link },
         el('div', { class:'a-body' },
           el('div', { class:'a-title', text: a.title }),
-          el('div', { class:'a-meta', text:
+          el('div', { class:'a-meta', text: a.backup ? 'Every record in one Excel file, kept safe offline' :
             `${num(a.item_count)} item${a.item_count === 1 ? '' : 's'}` +
             (a.amount ? ` · ${money0(a.amount)}` : '') }))
       ));

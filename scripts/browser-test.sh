@@ -9,6 +9,17 @@ DB=bms_browser
 DB=$DB "$ROOT/scripts/localdb.sh" >/dev/null
 psql -q -d $DB -f "$ROOT/sql/test/harness.sql" >/dev/null
 psql -q -d $DB -f "$ROOT/sql/test/fixtures.sql" >/dev/null
+# A resident (Resident role), and more than 1,000 audit rows so the backup
+# has to page through the database's 1,000-row answers to get them all.
+psql -q -v ON_ERROR_STOP=1 -d $DB >/dev/null <<'SQL'
+INSERT INTO auth.users (id, email) VALUES ('00000000-0000-0000-0000-0000000000b1','resident@test') ON CONFLICT DO NOTHING;
+INSERT INTO bms.user_profiles (user_id, full_name, email, is_active)
+VALUES ('00000000-0000-0000-0000-0000000000b1','Flat Resident','resident@test',true) ON CONFLICT DO NOTHING;
+INSERT INTO bms.user_roles (user_id, role_id)
+SELECT '00000000-0000-0000-0000-0000000000b1', id FROM bms.roles WHERE code = 'RESIDENT' ON CONFLICT DO NOTHING;
+INSERT INTO bms.audit_log (action, module_code, detail, severity)
+SELECT 'NOTE', 'reports', 'filler row ' || g, 'LOW' FROM generate_series(1, 1150) g;
+SQL
 
 pkill -f "devserver.mjs 5199" 2>/dev/null || true
 CSP=${CSP:-} PGDATABASE=$DB node "$ROOT/scripts/devserver.mjs" 5199 > /tmp/devserver-test.log 2>&1 &

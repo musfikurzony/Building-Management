@@ -1586,6 +1586,171 @@ const run = async () => {
     check('a department can be added from Settings', !!d && d.code === 'WATER_PUMP', JSON.stringify(d));
   });
 
+  /* ---------------- COMMITTEE & RULES ---------------- */
+  const PNG_1PX = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64');
+
+  await section('the committee page', async () => {
+    await signIn(page, 'admin@test');
+    await gotoHash(page, '#/community');
+    check('Committee & Rules is in the menu', await page.locator('.navlink[data-module="community"]').count() === 1);
+    check('the committee page opens with its heading', /Management Committee/.test(await page.textContent('main .hero')));
+
+    await page.click('main .hero button:has-text("Edit heading")');
+    await page.waitForSelector('.modal');
+    await page.locator('.modal input[type=text]').nth(1).fill('2026 – 2028');
+    await page.locator('.modal button:has-text("Save")').click();
+    await page.waitForTimeout(1200);
+    check('the heading can be edited (term shown)', /Term 2026 – 2028/.test(await page.textContent('main .hero')));
+
+    // The chairman, with a photo and a private phone.
+    await page.click('main button:has-text("Add committee member")');
+    await page.waitForSelector('.modal');
+    await page.setInputFiles('.modal input[type=file]', { name:'karim.png', mimeType:'image/png', buffer: PNG_1PX });
+    await page.waitForTimeout(600);
+    check('a chosen photo is previewed', await page.locator('.modal .photo-preview img').count() === 1);
+    await page.locator('.modal label.field:has(> span:text-is("Name")) input').fill('Abdul Karim');
+    await page.locator('.modal label.field:has(> span:text-is("Position")) input').fill('Chairman');
+    check('the order is suggested from the position', await page.locator('.modal label.field:has(> span:text-is("Order on the page")) input').inputValue() === '10');
+    await page.locator('.modal label.field:has(> span:text-is("Phone")) input').fill('01711000099');
+    await page.locator('.modal button:has-text("Save")').click();
+    await page.waitForTimeout(1500);
+
+    // An advisor with no photo, phone shown.
+    await page.click('main button:has-text("Add committee member")');
+    await page.waitForSelector('.modal');
+    await page.locator('.modal label.field:has(> span:text-is("Name")) input').fill('Nasrin Akter');
+    await page.locator('.modal label.field:has(> span:text-is("Position")) input').fill('Advisor');
+    await page.locator('.modal label.field:has(> span:text-is("Phone")) input').fill('01811000088');
+    await page.locator('.modal label:has-text("Show phone and email") input').check();
+    await page.locator('.modal button:has-text("Save")').click();
+    await page.waitForTimeout(1500);
+
+    const cards = await page.evaluate(() => [...document.querySelectorAll('main .member')].map(c => ({
+      name: c.querySelector('.member-name')?.textContent, pos: c.querySelector('.member-position')?.textContent,
+      img: !!c.querySelector('img.m-avatar'), initials: c.querySelector('.m-avatar.initials')?.textContent,
+      lead: c.classList.contains('lg') })));
+    check('both members appear, the chairman first', cards.length === 2 && cards[0].name === 'Abdul Karim', JSON.stringify(cards));
+    check('the chairman leads, larger, with his photo', cards[0]?.lead && cards[0]?.img);
+    check('a member with no photo gets initials', cards[1]?.initials === 'NA', cards[1]?.initials);
+
+    // Edit: a new position, then a former member.
+    await page.locator('main .member:has-text("Nasrin Akter") button:has-text("Edit")').click();
+    await page.waitForSelector('.modal');
+    await page.locator('.modal label.field:has(> span:text-is("Position")) input').fill('Vice Chairman');
+    await page.locator('.modal button:has-text("Save")').click();
+    await page.waitForTimeout(1300);
+    check('a member’s position can be changed', /Vice Chairman/.test(await page.textContent('main .member:has-text("Nasrin Akter")')));
+  });
+
+  await section('rules and documents', async () => {
+    await page.keyboard.press('Escape');
+    await gotoHash(page, '#/community/rules');
+    await page.click('main button:has-text("Add document")');
+    await page.waitForSelector('.modal');
+    await page.locator('.modal label.field:has(> span:text-is("Title")) input').fill('Building rules');
+    await page.locator('.modal textarea.doc-editor').fill('# General\n1. Keep the stairs clear.\n2. No parking at the gate.\n- Visitors sign in at the gate\n\n# সার্ভিস চার্জ\n১. প্রতি মাসের ১০ তারিখের মধ্যে পরিশোধ করুন।');
+    await page.locator('.modal button:has-text("Save")').click();
+    await page.waitForTimeout(1800);
+    check('a new document opens on its own page', /#\/community\/doc\//.test(await page.evaluate(() => location.hash)));
+    const doc = await page.evaluate(() => ({
+      h: [...document.querySelectorAll('.doc-body .doc-h')].map(x => x.textContent),
+      rules: [...document.querySelectorAll('.doc-body .rule')].map(x => x.textContent),
+      li: document.querySelectorAll('.doc-body li').length }));
+    check('headings, numbered rules and bullets are laid out', doc.h.length === 2 && doc.rules.length === 3 && doc.li === 1, JSON.stringify(doc));
+    check('Bangla rules keep their own numbers', doc.rules.some(r => r.startsWith('১.')), JSON.stringify(doc.rules));
+
+    // Markup typed into a rule stays text.
+    await page.click('main button:has-text("Edit")');
+    await page.waitForSelector('.modal');
+    await page.locator('.modal textarea.doc-editor').fill('1. <img src=x onerror=alert(9)> stays text');
+    await page.locator('.modal button:has-text("Save")').click();
+    await page.waitForTimeout(1500);
+    check('markup in a rule is shown as text, never run', await page.locator('.doc-body img').count() === 0
+          && /<img src=x/.test(await page.textContent('.doc-body')));
+
+    await gotoHash(page, '#/community/rules');
+    await page.click('main button:has-text("Add document")');
+    await page.waitForSelector('.modal');
+    await page.locator('.modal label.field:has(> span:text-is("Title")) input').fill('Lift closure (draft)');
+    await page.selectOption('.modal label.field:has(> span:text-is("Kind")) select', 'NOTICE');
+    await page.locator('.modal label.field:has(> span:text-is("Summary")) textarea').fill('The lift will be closed on Friday.');
+    await page.locator('.modal label:has-text("Published") input').uncheck();
+    await page.locator('.modal button:has-text("Save")').click();
+    await page.waitForTimeout(1500);
+    await gotoHash(page, '#/community/rules');
+    const list = await page.textContent('main');
+    check('the rules page lists documents by kind', /Building rules/.test(list) && /Notices/.test(list));
+    check('a draft is marked as a draft for editors', await page.locator('main .doc-row:has-text("Lift closure") .badge').count() === 1);
+  });
+
+  await section('what a resident sees', async () => {
+    await signIn(page, 'resident@test');
+    await page.waitForTimeout(800);
+    check('a resident lands on the committee, not on "not available"', /#\/community/.test(await page.evaluate(() => location.hash)),
+          await page.evaluate(() => location.hash));
+    const nav = await page.$$eval('.navlink', els => els.map(e => e.dataset.module));
+    check('and sees only Committee & Rules in the menu', nav.length === 1 && nav[0] === 'community', nav.join(','));
+    const txt = await page.textContent('main');
+    check('sees the committee', /Abdul Karim/.test(txt) && /Nasrin Akter/.test(txt));
+    check('but not the phone the chairman kept private', !/01711000099/.test(txt));
+    check('and does see the phone that was shared', /01811000088/.test(txt));
+    check('with no edit buttons', await page.locator('main button:has-text("Edit")').count() === 0
+          && await page.locator('main button:has-text("Add committee member")').count() === 0);
+    await gotoHash(page, '#/community/rules');
+    const r = await page.textContent('main');
+    check('sees the published rules but not the draft', /Building rules/.test(r) && !/Lift closure/.test(r));
+    await gotoHash(page, '#/finance');
+    check('and is turned away from the money', /Not available to you/.test(await page.textContent('main')));
+  });
+
+  /* ---------------- BACKUP ---------------- */
+  await section('backup download', async () => {
+    await signIn(page, 'admin@test');
+    await gotoHash(page, '#/dashboard');
+    await page.waitForTimeout(800);
+    check('the dashboard says no backup has been taken', /No backup taken yet/.test(await page.textContent('main')));
+
+    await gotoHash(page, '#/reports/backup');
+    check('Reports has a Backup tab', await page.locator('main .tab.on:has-text("Backup")').count() === 1);
+    const [dl] = await Promise.all([page.waitForEvent('download', { timeout: 60000 }),
+                                    page.click('main button:has-text("Download backup")')]);
+    const name = dl.suggestedFilename();
+    const file = await dl.path();
+    check('a full backup downloads as one Excel file', /^building-backup-all-\d{4}-\d{2}-\d{2}\.xlsx$/.test(name), name);
+    const { execSync } = await import('node:child_process');
+    const workbook = execSync(`unzip -p "${file}" xl/workbook.xml`, { maxBuffer: 1 << 28 }).toString();
+    const names = [...workbook.matchAll(/<sheet name="([^"]+)"/g)].map(m => m[1].replace(/&amp;/g, '&'));
+    check('with a sheet for every kind of record', names.length >= 34, `${names.length}: ${names.slice(0, 6).join(', ')}…`);
+    for (const n of ['About this backup', 'Ledger (all entries)', 'Receipts', 'Service charges', 'Fund movements', 'Audit log', 'Flats', 'Owners & tenants', 'Committee'])
+      check(`the backup has "${n}"`, names.includes(n));
+    const sheetRows = (n) => {
+      const i = names.indexOf(n) + 1;
+      return (execSync(`unzip -p "${file}" xl/worksheets/sheet${i}.xml`, { maxBuffer: 1 << 28 }).toString().match(/<row /g) || []).length - 1;
+    };
+    const counts = await page.evaluate(async () => {
+      const db = await import('/core/db.js');
+      return { ledger: await db.count('v_transactions'), audit: await db.count('v_audit_log') };
+    });
+    check('every ledger entry is in it', sheetRows('Ledger (all entries)') === counts.ledger, `${sheetRows('Ledger (all entries)')} vs ${counts.ledger}`);
+    check('more than 1,000 audit rows come through whole (paged)', counts.audit > 1000 && sheetRows('Audit log') >= counts.audit - 5,
+          `${sheetRows('Audit log')} vs ${counts.audit}`);
+    const ownersXml = execSync(`unzip -p "${file}" xl/worksheets/sheet${names.indexOf('Accounts') + 1}.xml`, { maxBuffer: 1 << 28 }).toString();
+    check('bank account numbers are not in the file', !/1234567890123/.test(execSync(`unzip -p "${file}"`, { maxBuffer: 1 << 28 }).toString('latin1')) && ownersXml.length > 0);
+
+    await page.waitForTimeout(2500);
+    const hist = await page.textContent('main');
+    check('the backup is recorded on the page', /Last backup today/.test(hist) && /Backups taken/.test(hist), hist.slice(0, 160));
+    await gotoHash(page, '#/dashboard');
+    await page.waitForTimeout(800);
+    check('and the dashboard reminder goes away', !/No backup taken yet/.test(await page.textContent('main')));
+
+    await gotoHash(page, '#/reports/backup');
+    await page.selectOption('main label:has-text("What to include") select', 'RANGE');
+    const [dl2] = await Promise.all([page.waitForEvent('download', { timeout: 60000 }),
+                                     page.click('main button:has-text("Download backup")')]);
+    check('a date-range backup is named for its dates', /^building-backup-\d{4}-01-01-to-\d{4}-\d{2}-\d{2}\.xlsx$/.test(dl2.suggestedFilename()), dl2.suggestedFilename());
+  });
+
   /* ---------------- SYSTEM RESET ----------------
      Last, because it empties the database it runs against. The database
      rules are proved in sql/test/t07_reset.sql; what is checked here is

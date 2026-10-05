@@ -26,7 +26,8 @@ const ROUTES = [
   '#/lift', '#/mosque', '#/maintenance', '#/fire', '#/work',
   '#/assets', '#/reconcile', '#/reports', '#/users', '#/audit',
   '#/settings', '#/flats/owners', '#/charges/outstanding', '@flat',
-  '#/charges/payments', '#/reports/entries', '#/reports/annual',
+  '#/charges/payments', '#/reports/entries', '#/reports/annual', '#/reports/backup',
+  '#/community', '#/community/rules', '@doc',
 ];
 
 async function signIn(page, email){
@@ -137,8 +138,12 @@ const run = async () => {
       const db = await import('/core/db.js');
       return (await db.q('flats', b => b.eq('flat_number', 'A-101')))[0]?.id;
     });
+    const docId = await page.evaluate(async () => {
+      const db = await import('/core/db.js');
+      return (await db.q('building_documents', b => b.limit(1)))[0]?.id;
+    });
     for (const r of ROUTES){
-      const route = r === '@flat' ? `#/flats/${flatId}` : r;
+      const route = r === '@flat' ? `#/flats/${flatId}` : r === '@doc' ? `#/community/doc/${docId}` : r;
       await page.evaluate(h => { location.hash = h; }, route);
       await page.waitForTimeout(850);
 

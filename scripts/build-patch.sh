@@ -17,7 +17,7 @@ OUT="$ROOT/sql/PATCH.sql"
 # lets the first admin be activated (030). Both were shipped as separate
 # hand-run fixes earlier, so a database MIGHT have had them — "might" is
 # not good enough for a file whose job is to make a database current.
-FILES="002_finance.sql 010_functions.sql 011_charge_functions.sql 030_rls.sql 070_reset.sql 080_roles.sql 085_people_reminders.sql 086_reports_funds.sql"
+FILES="002_finance.sql 010_functions.sql 011_charge_functions.sql 030_rls.sql 070_reset.sql 080_roles.sql 085_people_reminders.sql 086_reports_funds.sql 087_community_backup.sql"
 
 {
 cat <<'HDR'

@@ -196,6 +196,22 @@ const run = async () => {
   check('no raw database error on the 086 screens',
         !t9.some(x => /toast err/.test(x.kind) && /does not exist|schema cache|PGRST/i.test(x.text)), JSON.stringify(t9).slice(0, 160));
 
+  /* ---- 087: committee, rules, backup ---- */
+  await page.evaluate(() => { document.querySelector('#toasts')?.replaceChildren(); location.hash = '#/community'; });
+  await page.waitForTimeout(1800);
+  const com = await page.textContent('main');
+  check('the committee page asks for the update without 087', /needs a database update/.test(com) && /PATCH\.sql/.test(com), com.slice(0, 100).replace(/\s+/g,' '));
+  await page.evaluate(() => { location.hash = '#/reports/backup'; });
+  await page.waitForTimeout(1800);
+  check('the backup page still opens without 087', await page.isVisible('main button:has-text("Download backup")'));
+  const [dl] = await Promise.all([page.waitForEvent('download', { timeout: 60000 }).catch(() => null),
+                                  page.click('main button:has-text("Download backup")')]);
+  check('and a backup still downloads (the new lists are simply left out)', !!dl && /\.xlsx$/.test(dl.suggestedFilename()), dl?.suggestedFilename());
+  await page.waitForTimeout(800);
+  const t10 = await toasts(page);
+  check('no raw database error on the 087 screens',
+        !t10.some(x => /toast err/.test(x.kind) && /does not exist|schema cache|PGRST/i.test(x.text)), JSON.stringify(t10).slice(0, 200));
+
   await browser.close();
   const failed = results.filter(r => !r.pass);
   console.log(`\n${results.length - failed.length} of ${results.length} degraded-mode checks passed`);

@@ -16,14 +16,28 @@ SELECT t.eq('anon has no table privileges in bms', 0::bigint,
     WHERE table_schema='bms' AND grantee='anon'));
 
 -- Every view is security_invoker, so RLS follows through it. There are
--- exactly two exceptions, both in the alert path, and both are checked
--- below rather than merely excused here.
-SELECT t.eq('all views are security_invoker except the two alert views', ''::text,
+-- exactly three exceptions — the two in the alert path, and the committee
+-- list, which must hide a member's private phone from residents and so
+-- cannot simply pass the table's rows through. Each is checked below
+-- rather than merely excused here (the committee view's masking is
+-- proved row by row in t11).
+SELECT t.eq('all views are security_invoker except the alert views and the committee list', ''::text,
   COALESCE((SELECT string_agg(c.relname, ', ' ORDER BY c.relname)
      FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
     WHERE n.nspname='bms' AND c.relkind='v'
-      AND c.relname NOT IN ('v_alerts_all','v_dashboard_alerts')
+      AND c.relname NOT IN ('v_alerts_all','v_dashboard_alerts','v_board_members')
       AND NOT COALESCE(c.reloptions::text LIKE '%security_invoker=true%', false)), ''));
+
+-- v_board_members runs with its owner's rights, so it must check
+-- permission itself and must never be open to anonymous visitors.
+SELECT t.ok('v_board_members filters on the community.view permission',
+  pg_get_viewdef('bms.v_board_members'::regclass) LIKE '%has_perm(''community''::text, ''view''::text)%');
+SELECT t.ok('and masks phone and email unless the member allowed it',
+  pg_get_viewdef('bms.v_board_members'::regclass) ~ 'WHEN \(m\.show_phone OR (bms\.)?has_perm\(''community''::text, ''edit''::text\)\) THEN m\.phone'
+  AND pg_get_viewdef('bms.v_board_members'::regclass) ~ 'WHEN \(m\.show_phone OR (bms\.)?has_perm\(''community''::text, ''edit''::text\)\) THEN m\.email');
+SELECT t.eq('v_board_members is not granted to anonymous visitors', 0::bigint,
+  (SELECT COUNT(*) FROM information_schema.role_table_grants
+    WHERE table_schema='bms' AND table_name='v_board_members' AND grantee IN ('anon','PUBLIC')));
 
 -- v_alerts_all reads every table without RLS, so no client may reach it.
 SELECT t.eq('v_alerts_all is not granted to any client role', 0::bigint,
