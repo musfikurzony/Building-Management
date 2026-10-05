@@ -212,6 +212,20 @@ const run = async () => {
   check('no raw database error on the 087 screens',
         !t10.some(x => /toast err/.test(x.kind) && /does not exist|schema cache|PGRST/i.test(x.text)), JSON.stringify(t10).slice(0, 200));
 
+  /* ---- 088: storage never set up (the reported "Bucket not found") ---- */
+  const txnId = await page.evaluate(async () => (await (await import('/core/db.js')).q('transactions', b => b.limit(1)))[0]?.id);
+  if (txnId){
+    await page.evaluate(id => { document.querySelector('#toasts')?.replaceChildren(); location.hash = '#/finance/' + id; }, txnId);
+    await page.waitForTimeout(1800);
+    await page.setInputFiles('.attach-card input[type=file]', { name:'r.png', mimeType:'image/png',
+      buffer: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64') });
+    await page.waitForTimeout(1800);
+    const t11 = await toasts(page);
+    check('with no storage set up, attaching says to run PATCH.sql', t11.some(x => /File storage is not set up yet/.test(x.text) && /PATCH\.sql/.test(x.text)),
+          JSON.stringify(t11).slice(0, 200));
+    check('and does not show the raw "Bucket not found"', !t11.some(x => /^Bucket not found$/i.test(x.text.trim())));
+  } else check('there is an entry to attach to', false);
+
   await browser.close();
   const failed = results.filter(r => !r.pass);
   console.log(`\n${results.length - failed.length} of ${results.length} degraded-mode checks passed`);

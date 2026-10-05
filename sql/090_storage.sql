@@ -1,8 +1,9 @@
 -- =====================================================================
 -- 090_storage.sql — access policies for the three private buckets.
 --
--- Run this AFTER creating the buckets in the Supabase dashboard, and
--- make sure all three are created as PRIVATE (not public).
+-- The buckets themselves are created by 088_storage_setup.sql (private,
+-- with size and file-type limits), so there is nothing to do by hand in
+-- the Supabase dashboard any more.
 --
 -- The LPG Ledger's own `meter-photos` bucket is not mentioned anywhere
 -- in this file and is left exactly as it is.
@@ -28,14 +29,16 @@ BEGIN
     EXECUTE format('DROP POLICY IF EXISTS %I ON storage.objects', b || '_delete');
   END LOOP;
 
-  -- Receipts and invoices: anyone who may see the ledger may see them.
+  -- Receipts and invoices: anyone who may see the ledger may see them,
+  -- and whoever records service-charge payments may attach and see a
+  -- payment's proof (a bKash screenshot, a bank deposit slip).
   EXECUTE $sql$
     CREATE POLICY "bms-receipts_read" ON storage.objects FOR SELECT TO authenticated
-      USING (bucket_id = 'bms-receipts' AND bms.has_perm('finance','view'));
+      USING (bucket_id = 'bms-receipts' AND (bms.has_perm('finance','view') OR bms.has_perm('charges','view')));
     $sql$;
   EXECUTE $sql$
     CREATE POLICY "bms-receipts_write" ON storage.objects FOR INSERT TO authenticated
-      WITH CHECK (bucket_id = 'bms-receipts' AND bms.has_perm('finance','add'));
+      WITH CHECK (bucket_id = 'bms-receipts' AND (bms.has_perm('finance','add') OR bms.has_perm('charges','add')));
     $sql$;
   EXECUTE $sql$
     CREATE POLICY "bms-receipts_delete" ON storage.objects FOR DELETE TO authenticated

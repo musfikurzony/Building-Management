@@ -81,3 +81,36 @@ BEGIN
   EXECUTE format('ALTER DATABASE %I SET safeupdate.enabled = %L',
                  current_database(), 'on');
 END $safeupdate$;
+
+-- ---------------------------------------------------------------------
+-- Supabase Storage, as far as the database sees it: the buckets table
+-- and the objects table that storage policies are written against. With
+-- these, the bucket set-up and every storage policy in the migrations
+-- run here exactly as they will on Supabase, and the tests can try an
+-- upload as each role and watch the policy allow or refuse it.
+-- ---------------------------------------------------------------------
+CREATE SCHEMA IF NOT EXISTS storage;
+CREATE TABLE IF NOT EXISTS storage.buckets (
+  id                 text PRIMARY KEY,
+  name               text NOT NULL,
+  owner              uuid,
+  public             boolean DEFAULT false,
+  file_size_limit    bigint,
+  allowed_mime_types text[],
+  created_at         timestamptz DEFAULT now(),
+  updated_at         timestamptz DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS storage.objects (
+  id         uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  bucket_id  text REFERENCES storage.buckets(id),
+  name       text,
+  owner      uuid,
+  created_at timestamptz DEFAULT now(),
+  updated_at timestamptz DEFAULT now(),
+  metadata   jsonb,
+  UNIQUE (bucket_id, name)
+);
+ALTER TABLE storage.objects ENABLE ROW LEVEL SECURITY;
+GRANT USAGE ON SCHEMA storage TO anon, authenticated, service_role;
+GRANT SELECT ON storage.buckets TO anon, authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON storage.objects TO authenticated;

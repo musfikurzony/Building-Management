@@ -6,6 +6,7 @@ import { el, html, field, select, money, fdate, fdatetime, badge, table, emptySt
 import { q, one, rpc, logEvent } from '../core/db.js';
 import { can, ref, state, settings, invalidate } from '../core/store.js';
 import { go } from '../core/router.js';
+import { attachmentsCard } from '../core/attachments.js';
 
 export async function render({ params }){
   const sub = params[0];
@@ -139,7 +140,9 @@ async function entryForm(){
   const flatI = select(flats.map(f => ({ value:f.id, label:f.flat_number })), { placeholder:'Not flat-specific' });
   const refI  = el('input', { type:'text', maxlength:'80', placeholder:'Cheque no, bKash trx id, invoice no' });
   const noteI = el('textarea', { rows:2, maxlength:'500' });
-  const fileI = el('input', { type:'file', accept:'image/*,application/pdf', capture:'environment' });
+  // No `capture`: on a phone that would force the camera, and a receipt
+  // often arrives as a photo already taken, or forwarded on WhatsApp.
+  const fileI = el('input', { type:'file', accept:'image/*,application/pdf', multiple:true });
 
   const toField   = field('Into account', toI, { required:true });
   const deptField = field('Department', deptI, { required:true });
@@ -222,10 +225,12 @@ async function entryForm(){
       });
       const row = Array.isArray(txn) ? txn[0] : txn;
 
-      if (fileI.files?.[0] && row?.id){
+      if (fileI.files?.length && row?.id){
         const { uploadAttachment, BUCKETS } = await import('../core/db.js');
-        await uploadAttachment(BUCKETS.receipts, 'transactions', row.id, fileI.files[0])
-          .catch(e => toast('Saved, but the receipt did not upload: ' + e.message, 'err'));
+        for (const f of fileI.files){
+          await uploadAttachment(BUCKETS.receipts, 'transactions', row.id, f)
+            .catch(e => toast(`Saved, but ${f.name} did not upload. ${e.message} You can attach it from the entry's page.`, 'err'));
+        }
       }
 
       const st = row?.status || '';
@@ -257,7 +262,7 @@ async function entryForm(){
       el('div', { class:'grid g-form' }, vendField, flatField),
       el('div', { class:'grid g-form' },
         field('Reference number', refI),
-        field('Receipt or photo', fileI, { hint:'Photos are shrunk before upload. Max 5 MB.' })),
+        field('Receipt or photo', fileI, { hint:'One or more photos or PDFs, up to 10 MB each. You can also attach them later from the entry\u2019s page.' })),
       field('Notes', noteI),
       el('div', { class:'btn-row' }, submitBtn, draftBtn,
         el('a', { class:'btn', href:'#/finance', text:'Cancel' }))));
@@ -352,7 +357,6 @@ async function detail(id){
   const lines = await q('ledger_entries', b => b.eq('txn_id', id)).catch(() => []);
   const accounts = await ref('accounts');
   const accName = (aid) => accounts.find(a => a.id === aid)?.name || '—';
-  const files = await q('attachments', b => b.eq('entity_table','transactions').eq('entity_id', id).is('deleted_at', null)).catch(() => []);
 
   const page = el('div', {});
   page.append(el('div', { class:'page-head' },
@@ -399,20 +403,16 @@ async function detail(id){
       ], lines)));
   }
 
-  if (files.length){
-    const list = el('div', { class:'card' }, el('div', { class:'card-head' }, el('h2', { text:'Attachments' })));
-    for (const f of files){
-      const link = el('button', { class:'btn small', text: f.file_name });
-      link.onclick = async () => {
-        const { signedUrl } = await import('../core/db.js');
-        const url = await signedUrl(f.bucket, f.storage_path, 60);
-        logEvent('FILE_DOWNLOAD', { module:'finance', table:'attachments', id:f.id, label:f.file_name });
-        if (url) window.open(url, '_blank', 'noopener');
-      };
-      list.append(el('div', { style:'margin-bottom:.4rem' }, link));
-    }
-    page.append(list);
-  }
+  // Receipts and photos — and a way to add one later, to any entry.
+  page.append(attachmentsCard({
+    entityTable: 'transactions', entityId: id, bucket: 'bms-receipts',
+    canAdd: can('finance', 'add') && r.status !== 'CANCELLED',
+    title: r.direction === 'INCOME' ? 'Proof & documents' : 'Receipts & photos',
+    hint: r.direction === 'INCOME'
+      ? 'A deposit slip, a bKash screenshot or a letter — a photo or a PDF. You can add one at any time.'
+      : 'A photo of the receipt or invoice, or a PDF. You can add one at any time — even to an older entry.',
+    entryDate: r.txn_date
+  }));
 
   const btns = el('div', { class:'btn-row' }, el('a', { class:'btn', href:'#/finance', text:'Back to ledger' }));
 

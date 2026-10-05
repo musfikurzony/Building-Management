@@ -30,7 +30,28 @@ UPDATE bms.departments SET name = 'Gas (emergency)' WHERE code = 'LPG';
 \ir ../086_reports_funds.sql
 SELECT t.eq('and a renamed department keeps its new name', 'Gas (emergency)',
   (SELECT name FROM bms.departments WHERE code = 'LPG'));
+UPDATE bms.departments SET name = 'LPG fund' WHERE code = 'LPG';
+
+-- A building that ran the first version has the old wording; re-running
+-- brings it up to date, without duplicates.
+UPDATE bms.categories SET name = 'Emergency fund repaid from LPG collection'
+ WHERE txn_type = 'INCOME' AND department_id = (SELECT id FROM bms.departments WHERE code = 'LPG');
+UPDATE bms.categories SET name = 'Cylinder bought from the emergency fund'
+ WHERE txn_type = 'EXPENSE' AND department_id = (SELECT id FROM bms.departments WHERE code = 'LPG');
 UPDATE bms.departments SET name = 'LPG (emergency fund)' WHERE code = 'LPG';
+\ir ../086_reports_funds.sql
+SELECT t.eq('the old department name becomes "LPG fund"', 'LPG fund', (SELECT name FROM bms.departments WHERE code = 'LPG'));
+SELECT t.eq('the income category says what it is', 'LPG fund refilled from meter bill collection',
+  (SELECT c.name FROM bms.categories c JOIN bms.departments d ON d.id = c.department_id WHERE d.code = 'LPG' AND c.txn_type = 'INCOME'));
+SELECT t.eq('and so does the expense category', 'LPG cylinder bought from LPG fund',
+  (SELECT c.name FROM bms.categories c JOIN bms.departments d ON d.id = c.department_id WHERE d.code = 'LPG' AND c.txn_type = 'EXPENSE'));
+UPDATE bms.categories SET name = 'Gas cylinder (our own name)'
+ WHERE txn_type = 'EXPENSE' AND department_id = (SELECT id FROM bms.departments WHERE code = 'LPG');
+\ir ../086_reports_funds.sql
+SELECT t.eq('a category the building renamed itself is left alone', 'Gas cylinder (our own name)',
+  (SELECT c.name FROM bms.categories c JOIN bms.departments d ON d.id = c.department_id WHERE d.code = 'LPG' AND c.txn_type = 'EXPENSE'));
+SELECT t.eq('and no second expense category appears beside it', 2::bigint,
+  (SELECT COUNT(*) FROM bms.categories c JOIN bms.departments d ON d.id = c.department_id WHERE d.code = 'LPG'));
 
 SELECT t.remember('cat_lpg_exp', (SELECT c.id::text FROM bms.categories c JOIN bms.departments d ON d.id = c.department_id
                                    WHERE d.code = 'LPG' AND c.txn_type = 'EXPENSE'));
@@ -147,10 +168,10 @@ SELECT t.runs('A-102 pays part', $$
 -- ---------------------------------------------------------------------
 SELECT t.eq('income by department shows the LPG repayment', 6000.00,
   (SELECT amount FROM bms.report_income_expense(t.pm(), t.pm_end())
-    WHERE direction = 'INCOME' AND department_name = 'LPG (emergency fund)'));
+    WHERE direction = 'INCOME' AND department_name = 'LPG fund'));
 SELECT t.eq('expense by department shows the cylinder', 6000.00,
   (SELECT amount FROM bms.report_income_expense(t.pm(), t.pm_end())
-    WHERE direction = 'EXPENSE' AND department_name = 'LPG (emergency fund)'));
+    WHERE direction = 'EXPENSE' AND department_name = 'LPG fund'));
 SELECT t.eq('service charge income is the two payments', 7000.00,
   (SELECT SUM(amount) FROM bms.report_income_expense(t.pm(), t.pm_end())
     WHERE direction = 'INCOME' AND department_name = 'Service Charge'));

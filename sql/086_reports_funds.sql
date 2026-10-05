@@ -336,16 +336,32 @@ GRANT EXECUTE ON FUNCTION bms.report_service_charge(date,date)  TO authenticated
 -- ordinary data afterwards — rename it, hide it, or add to it in Settings.
 -- ---------------------------------------------------------------------
 INSERT INTO bms.departments (code, name, sort_order)
-VALUES ('LPG', 'LPG (emergency fund)', 115)
+VALUES ('LPG', 'LPG fund', 115)
 ON CONFLICT (code) DO NOTHING;
 
+-- The first wording ("emergency fund", "repaid") made the fund sound like
+-- a loan. It is a standing LPG fund: it buys the cylinder, and the flats'
+-- meter bills fill it up again. Bring the original names up to date —
+-- only where they are still the original names, so a name the building
+-- chose in Settings is never overwritten.
+UPDATE bms.departments SET name = 'LPG fund'
+ WHERE code = 'LPG' AND name = 'LPG (emergency fund)';
+UPDATE bms.categories c SET name = v.new_name
+  FROM (VALUES ('Cylinder bought from the emergency fund',   'LPG cylinder bought from LPG fund'),
+               ('Emergency fund repaid from LPG collection', 'LPG fund refilled from meter bill collection'))
+       AS v(old_name, new_name),
+       bms.departments d
+ WHERE d.code = 'LPG' AND c.department_id = d.id AND c.parent_id IS NULL AND c.name = v.old_name;
+
+-- One expense and one income category — seeded only if the department
+-- has none of that kind yet, so renaming one never brings a duplicate back.
 INSERT INTO bms.categories (department_id, name, txn_type, sort_order)
 SELECT d.id, v.name, v.txn_type, v.sort_order
   FROM bms.departments d
   CROSS JOIN (VALUES
-    ('Cylinder bought from the emergency fund',     'EXPENSE', 10),
-    ('Emergency fund repaid from LPG collection',   'INCOME',  20)
+    ('LPG cylinder bought from LPG fund',            'EXPENSE', 10),
+    ('LPG fund refilled from meter bill collection', 'INCOME',  20)
   ) AS v(name, txn_type, sort_order)
  WHERE d.code = 'LPG'
    AND NOT EXISTS (SELECT 1 FROM bms.categories c
-                    WHERE c.department_id = d.id AND c.name = v.name AND c.parent_id IS NULL);
+                    WHERE c.department_id = d.id AND c.txn_type = v.txn_type AND c.parent_id IS NULL);

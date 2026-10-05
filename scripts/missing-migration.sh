@@ -13,7 +13,7 @@ export PGOPTIONS='-c client_min_messages=warning'
 DB=bms_behind
 
 # Which migrations to leave out. Update this when a new one lands.
-SKIP="070_reset.sql 080_roles.sql 085_people_reminders.sql 086_reports_funds.sql 087_community_backup.sql"
+SKIP="070_reset.sql 080_roles.sql 085_people_reminders.sql 086_reports_funds.sql 087_community_backup.sql 088_storage_setup.sql"
 
 psql -q -d postgres -c "DROP DATABASE IF EXISTS $DB WITH (FORCE);" >/dev/null
 psql -q -d postgres -c "CREATE DATABASE $DB;" >/dev/null
@@ -29,6 +29,9 @@ psql -q -d $DB -f "$ROOT/sql/test/fixtures.sql" >/dev/null
 psql -q -v ON_ERROR_STOP=1 -d $DB >/dev/null <<'SQL'
 SELECT set_config('request.jwt.claim.sub', t.recall('admin'), false);
 SELECT bms.generate_monthly_charges(EXTRACT(year FROM CURRENT_DATE)::int, EXTRACT(month FROM CURRENT_DATE)::int);
+SELECT bms.create_transaction(CURRENT_DATE, 'EXPENSE', (SELECT id FROM bms.departments WHERE code = 'CLEANING'),
+  (SELECT id FROM bms.categories WHERE name = 'Cleaning supplies'), 'Brooms', 100, 'CASH',
+  (SELECT id FROM bms.accounts WHERE code = 'BANK1'));
 SQL
 
 fuser -k 5196/tcp 2>/dev/null || true

@@ -1572,7 +1572,7 @@ const run = async () => {
     await page.waitForTimeout(1800);
     const rep = await page.textContent('main');
     check('the fund appears in the monthly report', /LPG emergency fund/.test(rep));
-    check('and its spending under its own department', /LPG \(emergency fund\)/.test(rep));
+    check('and its spending under its own department', /LPG fund/.test(rep));
   });
 
   await section('a new department from Settings', async () => {
@@ -1749,6 +1749,73 @@ const run = async () => {
     const [dl2] = await Promise.all([page.waitForEvent('download', { timeout: 60000 }),
                                      page.click('main button:has-text("Download backup")')]);
     check('a date-range backup is named for its dates', /^building-backup-\d{4}-01-01-to-\d{4}-\d{2}-\d{2}\.xlsx$/.test(dl2.suggestedFilename()), dl2.suggestedFilename());
+  });
+
+  /* ---------------- RECEIPTS & PHOTOS ON ENTRIES ----------------
+     Reported: attaching a receipt to an expense failed ("Bucket not
+     found") and there was no way to add it afterwards. The dev server
+     now stands in for Supabase Storage, with the same buckets and the
+     same storage policies, so the whole round trip is exercised here. */
+  const PDF_BYTES = Buffer.from('%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n');
+  await section('a receipt photo on an expense', async () => {
+    await signIn(page, 'admin@test');
+    // The form the building used: an expense with a receipt attached.
+    await gotoHash(page, '#/finance/new');
+    await page.locator('main input[type=text]').first().fill('Cleaning supplies — brooms');
+    await page.locator('main input[type=number]').first().fill('450');
+    await page.locator('main select').nth(2).selectOption({ label: 'Main bank account (bank)' });
+    await page.setInputFiles('main input[type=file]', { name:'brooms-receipt.png', mimeType:'image/png', buffer: PNG_1PX });
+    await page.locator('main button:has-text("Submit")').first().click();
+    await page.waitForTimeout(3000);
+    const t1 = await page.evaluate(() => [...document.querySelectorAll('#toasts .toast')].map(t => t.textContent).join(' | '));
+    check('an expense with a receipt saves without an upload error', !/did not upload|Bucket not found/i.test(t1), t1);
+    check('and opens on its own page', /#\/finance\/[0-9a-f-]{36}/.test(await page.evaluate(() => location.hash)));
+    await page.waitForTimeout(1200);
+    check('where the receipt shows as a picture', await page.locator('.attach-card .attach-thumb img').count() === 1);
+    check('saying who added it', /added .* by you/.test(await page.textContent('.attach-card')));
+
+    // Later: a second file, a PDF invoice, added to the same (posted) entry.
+    await page.setInputFiles('.attach-card input[type=file]', { name:'invoice.pdf', mimeType:'application/pdf', buffer: PDF_BYTES });
+    await page.waitForTimeout(2200);
+    check('a PDF can be attached afterwards to a posted entry', await page.locator('.attach-card .attach-tile').count() === 2);
+    check('and shows as a PDF tile', /PDF/.test(await page.textContent('.attach-card .attach-tile:nth-child(2)')));
+
+    // Opening it gives a short-lived link that really serves the file.
+    const [pop] = await Promise.all([page.context().waitForEvent('page', { timeout: 10000 }),
+                                     page.locator('.attach-card .attach-tile:nth-child(2) .attach-thumb').click()]);
+    await pop.waitForLoadState('domcontentloaded').catch(() => {});
+    await page.waitForTimeout(800);
+    check('opening a file uses a signed link', /\/storage\/v1\/object\/sign\/bms-receipts\/.+token=/.test(pop.url()), pop.url().slice(0, 90));
+    await pop.close();
+
+    // The wrong kind of file is refused in plain words.
+    await page.evaluate(() => document.querySelector('#toasts')?.replaceChildren());
+    await page.setInputFiles('.attach-card input[type=file]', { name:'notes.txt', mimeType:'text/plain', buffer: Buffer.from('hello') });
+    await page.waitForTimeout(1500);
+    const t2 = await page.evaluate(() => [...document.querySelectorAll('#toasts .toast')].map(t => t.textContent).join(' | '));
+    check('a text file is refused, in words', /not accepted here/.test(t2), t2);
+    check('and nothing is recorded for it', await page.locator('.attach-card .attach-tile').count() === 2);
+
+    // Taking one down keeps it, marked removed, with the reason.
+    await page.locator('.attach-card .attach-tile:nth-child(2) button:has-text("Remove")').click();
+    await page.waitForSelector('.modal');
+    await page.locator('.modal textarea, .modal input[type=text]').first().fill('Duplicate of the photo');
+    await page.locator('.modal .btn:has-text("Remove")').click();
+    await page.waitForTimeout(1500);
+    check('a removed file leaves the list', await page.locator('.attach-card .attach-tile').count() === 1);
+    check('but stays on record with its reason', /Removed \(1\)/.test(await page.textContent('.attach-card'))
+          && /Duplicate of the photo/.test(await page.textContent('.attach-card')));
+  });
+
+  await section('proof of payment on a service charge receipt', async () => {
+    await gotoHash(page, '#/charges/payments');
+    await page.locator('main tbody tr', { hasNotText: /reversed/i }).first().click();
+    await page.waitForSelector('.modal .attach-card', { timeout: 6000 });
+    check('a receipt has a "Proof of payment" section', /Proof of payment/.test(await page.textContent('.modal .attach-card')));
+    await page.setInputFiles('.modal .attach-card input[type=file]', { name:'bkash.png', mimeType:'image/png', buffer: PNG_1PX });
+    await page.waitForTimeout(2200);
+    check('a bKash screenshot can be attached to a payment', await page.locator('.modal .attach-card .attach-thumb img').count() === 1);
+    await page.locator('.modal button:has-text("Done")').click();
   });
 
   /* ---------------- SYSTEM RESET ----------------

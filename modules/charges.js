@@ -166,6 +166,7 @@ export async function paymentDialog(flatId){
                        { value: defaultAcct, placeholder:'Choose an account' });
   const refI  = el('input', { type:'text', maxlength:'80', placeholder:'bKash trx id, cheque no' });
   const payerI = el('input', { type:'text', maxlength:'120', placeholder:'If not the owner' });
+  const proofI = el('input', { type:'file', accept:'image/*,application/pdf' });
 
   const info = el('p', { class:'hint' });
   const syncInfo = () => {
@@ -187,6 +188,7 @@ export async function paymentDialog(flatId){
       field('Date', dateI, { required:true })),
     el('div', { class:'grid g-form' }, field('Method', methI), field('Into account', acctI, { required:true })),
     el('div', { class:'grid g-form' }, field('Reference', refI), field('Paid by', payerI)),
+    field('Proof of payment (optional)', proofI, { hint:'A bKash or bank screenshot, or a deposit slip. Kept with the payment for the committee; it is not sent to the flat.' }),
     el('p', { class:'hint', text:'The money is applied to the oldest unpaid month first. Anything left over is kept as advance and settles next month automatically.' }));
 
   const res = await modal({ title:'Record a payment', body, actions:[
@@ -211,6 +213,13 @@ export async function paymentDialog(flatId){
     const row = Array.isArray(pay) ? pay[0] : pay;
     invalidate('balances');
     ok(`Receipt ${row?.receipt_no || ''} recorded.`);
+    if (proofI.files?.[0] && row?.id){
+      // The payment is already safe; a failed upload only means the proof
+      // has to be added from the receipt afterwards.
+      const { uploadAttachment, BUCKETS } = await import('../core/db.js');
+      await uploadAttachment(BUCKETS.receipts, 'payments', row.id, proofI.files[0])
+        .catch(e => err(`Payment recorded, but the proof did not upload. ${e.message} You can add it from the receipt.`));
+    }
     if (row) await receiptDialog(row.id);
     return row;
   } catch { return null; }

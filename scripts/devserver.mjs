@@ -297,20 +297,121 @@ function sendRows(req, res, rows, code = 200){
   return json(res, code, rows);
 }
 
+/* ---------------------------------------------------------------------
+   A small Supabase Storage stand-in. Files live on local disk; the
+   storage.objects row is written AS THE SIGNED-IN USER, so the storage
+   policies in the migrations decide — exactly as on Supabase — who may
+   upload, open and remove. A missing bucket answers "Bucket not found",
+   and the bucket's own size and file-type limits are enforced, because
+   those are the failures a person meets in real use.
+   --------------------------------------------------------------------- */
+const STORE = path.join(process.env.TMPDIR || '/tmp', `bms-devstorage-${PORT}`);
+const signed = new Map();   // token -> { bucket, name }
+const storageErr = (res, http, status, error, message) => json(res, http, { statusCode: String(status), error, message });
+const blobPath = (bucket, name) => path.join(STORE, bucket, crypto.createHash('sha1').update(name).digest('hex'));
+
+function multipartFile(raw, contentType){
+  const m = /boundary=(?:"([^"]+)"|([^;]+))/i.exec(contentType || '');
+  if (!m) return { data: raw, type: contentType || 'application/octet-stream' };
+  const boundary = Buffer.from('--' + (m[1] || m[2]));
+  let pos = raw.indexOf(boundary);
+  while (pos !== -1){
+    const next = raw.indexOf(boundary, pos + boundary.length);
+    if (next === -1) break;
+    const part = raw.subarray(pos + boundary.length + 2, next - 2);
+    const sep = part.indexOf('\r\n\r\n');
+    const head = part.subarray(0, sep).toString('utf8');
+    if (/filename=/i.test(head) || /name=""/.test(head)){
+      const type = (/content-type:\s*([^\r\n]+)/i.exec(head) || [])[1] || 'application/octet-stream';
+      return { data: part.subarray(sep + 4), type: type.trim() };
+    }
+    pos = next;
+  }
+  return { data: Buffer.alloc(0), type: 'application/octet-stream' };
+}
+
+async function handleStorage(req, res, url, userId, body, raw){
+  const rest = decodeURIComponent(url.pathname.replace(/^\/storage\/v1\/?/, ''));
+
+  // A signed link, opened from anywhere: the token is the permission.
+  if (req.method === 'GET' && rest.startsWith('object/sign/')){
+    const t = signed.get(url.searchParams.get('token') || '');
+    if (!t) return storageErr(res, 400, 400, 'InvalidSignature', 'The signature is invalid or has expired');
+    const meta = await pool.query('SELECT metadata FROM storage.objects WHERE bucket_id=$1 AND name=$2', [t.bucket, t.name]);
+    const data = await fs.readFile(blobPath(t.bucket, t.name));
+    res.writeHead(200, { 'Content-Type': meta.rows[0]?.metadata?.mimetype || 'application/octet-stream', 'Cache-Control':'no-store' });
+    return res.end(data);
+  }
+
+  if (req.method === 'POST' && rest.startsWith('object/sign/')){
+    const [bucket, ...nameParts] = rest.slice('object/sign/'.length).split('/');
+    const name = nameParts.join('/');
+    const seen = await asUser(userId, c => c.query('SELECT 1 FROM storage.objects WHERE bucket_id=$1 AND name=$2', [bucket, name]));
+    if (!seen.rowCount) return storageErr(res, 400, 404, 'not_found', 'Object not found');
+    const token = crypto.randomUUID();
+    signed.set(token, { bucket, name });
+    return json(res, 200, { signedURL: `/object/sign/${bucket}/${name}?token=${token}` });
+  }
+
+  if (rest.startsWith('object/')){
+    const [bucket, ...nameParts] = rest.slice('object/'.length).split('/');
+    const name = nameParts.join('/');
+
+    if (req.method === 'DELETE' && !name){
+      const prefixes = (body && body.prefixes) || [];
+      const out = await asUser(userId, c => c.query(
+        'DELETE FROM storage.objects WHERE bucket_id=$1 AND name = ANY($2::text[]) RETURNING name', [bucket, prefixes]));
+      return json(res, 200, out.rows);
+    }
+
+    if (req.method === 'GET'){
+      const seen = await asUser(userId, c => c.query('SELECT metadata FROM storage.objects WHERE bucket_id=$1 AND name=$2', [bucket, name]));
+      if (!seen.rowCount) return storageErr(res, 400, 404, 'not_found', 'Object not found');
+      const data = await fs.readFile(blobPath(bucket, name));
+      res.writeHead(200, { 'Content-Type': seen.rows[0].metadata?.mimetype || 'application/octet-stream', 'Cache-Control':'no-store' });
+      return res.end(data);
+    }
+
+    if (req.method === 'POST' || req.method === 'PUT'){
+      const b = await pool.query('SELECT * FROM storage.buckets WHERE id=$1', [bucket]).catch(() => ({ rows: [] }));
+      if (!b.rows.length) return storageErr(res, 400, 404, 'Bucket not found', 'Bucket not found');
+      const file = multipartFile(raw || Buffer.alloc(0), req.headers['content-type']);
+      const bk = b.rows[0];
+      if (bk.file_size_limit && file.data.length > Number(bk.file_size_limit))
+        return storageErr(res, 400, 413, 'Payload too large', 'The object exceeded the maximum allowed size');
+      if (bk.allowed_mime_types && bk.allowed_mime_types.length && !bk.allowed_mime_types.includes(file.type))
+        return storageErr(res, 400, 415, 'invalid_mime_type', `mime type ${file.type} is not supported`);
+      try {
+        await asUser(userId, c => c.query(
+          'INSERT INTO storage.objects (bucket_id, name, owner, metadata) VALUES ($1,$2,$3,$4)',
+          [bucket, name, userId, JSON.stringify({ mimetype: file.type, size: file.data.length })]));
+      } catch (e){
+        if (/duplicate key/i.test(e.message)) return storageErr(res, 400, 409, 'Duplicate', 'The resource already exists');
+        return storageErr(res, 400, 403, 'Unauthorized', 'new row violates row-level security policy');
+      }
+      await fs.mkdir(path.join(STORE, bucket), { recursive: true });
+      await fs.writeFile(blobPath(bucket, name), file.data);
+      return json(res, 200, { Key: `${bucket}/${name}`, Id: crypto.randomUUID() });
+    }
+  }
+  return storageErr(res, 400, 400, 'not_implemented', 'Not emulated by the dev server: ' + rest);
+}
+
 /* --------------------------------------------------------------------- */
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://localhost:${PORT}`);
   if (req.method === 'OPTIONS'){
     res.writeHead(204, { 'Access-Control-Allow-Origin':'*', 'Access-Control-Allow-Headers':'*',
-                         'Access-Control-Allow-Methods':'GET,POST,PATCH,DELETE,HEAD,OPTIONS' });
+                         'Access-Control-Allow-Methods':'GET,POST,PATCH,PUT,DELETE,HEAD,OPTIONS' });
     return res.end();
   }
 
-  let body = null;
-  if (['POST','PATCH','PUT'].includes(req.method)){
+  let body = null, raw = null;
+  if (['POST','PATCH','PUT','DELETE'].includes(req.method)){
     const chunks = [];
     for await (const c of req) chunks.push(c);
-    const text = Buffer.concat(chunks).toString('utf8');
+    raw = Buffer.concat(chunks);
+    const text = /multipart\//i.test(req.headers['content-type'] || '') ? '' : raw.toString('utf8');
     try { body = text ? JSON.parse(text) : null; } catch { body = null; }
   }
 
@@ -319,7 +420,7 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname.startsWith('/rest/v1'))
       return await handleRest(req, res, url, sessions.get(bearer(req)) || null, body);
     if (url.pathname.startsWith('/storage/v1'))
-      return json(res, 200, { message:'storage is not emulated by the dev server' });
+      return await handleStorage(req, res, url, sessions.get(bearer(req)) || null, body, raw);
 
     // The dev server hands the app its own address, so the real config.js
     // is never served and the tests can never reach the live project.
