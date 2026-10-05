@@ -26,6 +26,7 @@ const ROUTES = [
   '#/lift', '#/mosque', '#/maintenance', '#/fire', '#/work',
   '#/assets', '#/reconcile', '#/reports', '#/users', '#/audit',
   '#/settings', '#/flats/owners', '#/charges/outstanding', '@flat',
+  '#/charges/payments', '#/reports/entries', '#/reports/annual',
 ];
 
 async function signIn(page, email){
@@ -184,6 +185,22 @@ const run = async () => {
       problems++;
       console.log(`PROBLEM  Remind dialog did not open`);
     }
+
+    // A receipt, opened again from the payments list.
+    await page.evaluate(() => { location.hash = '#/charges/payments'; });
+    await page.waitForTimeout(900);
+    await page.evaluate(() => document.querySelector('main tbody tr')?.click());
+    await page.waitForTimeout(1200);
+    if (await page.isVisible('.modal #receiptBody')){
+      const o = await overflow(page, dev.width);
+      const bad = await page.evaluate(() => [...document.querySelectorAll('.modal button, .modal a')]
+        .filter(el => { const r = el.getBoundingClientRect(); return r.width && (r.height < 43.5 || r.right > innerWidth + 1); })
+        .map(el => `${el.tagName.toLowerCase()} "${el.textContent.trim()}"`));
+      if (o.over > 0 || bad.length){ problems++; console.log(`PROBLEM  receipt dialog: +${o.over}px; ${bad.join(', ')}`); }
+      else console.log('ok       receipt dialog fits, every control >= 44px');
+      await page.keyboard.press('Escape');
+      await page.waitForTimeout(300);
+    } else { problems++; console.log('PROBLEM  receipt dialog did not open'); }
 
     // The flat page's own buttons, where the owner and tenant are managed.
     await page.evaluate(h => { location.hash = h; }, `#/flats/${flatId}`);

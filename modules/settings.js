@@ -298,8 +298,12 @@ async function categoriesCard(){
   if (addable){
     const b = el('button', { class:'btn primary', text:'＋ New category' });
     b.onclick = () => categoryDialog(null, depts);
-    card.append(el('div', { class:'toolbar' }, b));
+    const d = el('button', { class:'btn', text:'＋ New department' });
+    d.onclick = () => departmentDialog(depts);
+    card.append(el('div', { class:'toolbar' }, b, d));
   }
+  card.append(el('p', { class:'small muted', text:
+    'Departments are the headings of the monthly report: ' + depts.filter(x => x.is_active).map(x => x.name).join(', ') + '.' }));
 
   if (!cats.length){ card.append(emptyState('No categories yet.')); return card; }
 
@@ -549,4 +553,26 @@ async function remindersCard(){
   }
   load();
   return card;
+}
+
+/** A department is a heading on every report. Adding one is cheap; they
+    are never deleted, because entries already filed under one keep it. */
+async function departmentDialog(depts){
+  const name = el('input', { type:'text', maxlength:'60', required:true, placeholder:'e.g. Water pump, Community hall' });
+  const res = await modal({ title:'New department', body: el('div', {},
+      field('Name', name, { required:true, hint:'Appears as its own heading in Income and Expense by department.' })),
+    actions:[{ label:'Cancel', value:null }, { label:'Create', kind:'primary', value:true,
+      validate: () => { if (!name.value.trim()){ err('A name is required.'); return false; } return true; } }] });
+  if (!res) return;
+  const n = name.value.trim();
+  if (depts.some(d => d.name.toLowerCase() === n.toLowerCase())) return err(`There is already a department called ${n}.`);
+  let code = n.toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 24) || 'DEPT';
+  if (depts.some(d => d.code === code)) code = (code.slice(0, 20) + '_' + Date.now().toString(36).slice(-3)).toUpperCase();
+  const sort = Math.max(0, ...depts.filter(d => d.sort_order < 900).map(d => d.sort_order)) + 10;
+  try {
+    await insert('departments', { code, name: n, sort_order: sort });
+    invalidate('departments', 'categories');
+    ok(`Department ${n} created. Add its categories next.`);
+    refresh();
+  } catch { /* toast */ }
 }

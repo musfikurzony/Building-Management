@@ -18,6 +18,8 @@ SELECT bms.set_flat_owner((SELECT id FROM bms.flats WHERE flat_number='A-101'), 
        'Mohammad Abdur Rahim Chowdhury', '01712345678', 'rahim.chowdhury@example.com', NULL, CURRENT_DATE - 400);
 SELECT bms.set_flat_tenant((SELECT id FROM bms.flats WHERE flat_number='A-101'), NULL,
        'Karim Tenant', '+44 7700 900123', NULL, NULL, CURRENT_DATE - 30, true);
+SELECT bms.record_payment((SELECT id FROM bms.flats WHERE flat_number='A-102'), 4500.00, CURRENT_DATE,
+       'BKASH', (SELECT id FROM bms.accounts WHERE code='BANK1'), 'TRX-8KD2', NULL, 'Karima Begum');
 SQL
 
 fuser -k 5198/tcp 2>/dev/null || true

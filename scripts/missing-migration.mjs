@@ -180,6 +180,22 @@ const run = async () => {
   const rawAll = tAll.filter(x => /toast err/.test(x.kind) && /does not exist|schema cache|PGRST/i.test(x.text));
   check('no raw database error anywhere in the 085 screens', rawAll.length === 0, rawAll.map(x => x.text).join(' | '));
 
+  /* ---- 086: the monthly report ---- */
+  await page.evaluate(() => { document.querySelector('#toasts')?.replaceChildren(); location.hash = '#/reports'; });
+  await page.waitForTimeout(2200);
+  const rep = await page.textContent('main');
+  check('the monthly report says it needs the update, without 086', /needs a database update/.test(rep) && /PATCH\.sql/.test(rep), rep.slice(0, 120).replace(/\s+/g,' '));
+  check('and does not show a raw error', !/does not exist|schema cache|PGRST/.test(rep));
+  await page.evaluate(() => { location.hash = '#/reports/entries'; });
+  await page.waitForTimeout(2000);
+  check('"Search entries" still works without 086', /All entries|Income by department/.test(await page.textContent('main')));
+  await page.evaluate(() => { location.hash = '#/charges/payments'; });
+  await page.waitForTimeout(1500);
+  check('the payments list renders without 085/086', /Payments received/.test(await page.textContent('main')));
+  const t9 = await toasts(page);
+  check('no raw database error on the 086 screens',
+        !t9.some(x => /toast err/.test(x.kind) && /does not exist|schema cache|PGRST/i.test(x.text)), JSON.stringify(t9).slice(0, 160));
+
   await browser.close();
   const failed = results.filter(r => !r.pass);
   console.log(`\n${results.length - failed.length} of ${results.length} degraded-mode checks passed`);

@@ -10,6 +10,7 @@ import { q, one, rpc, logEvent } from '../core/db.js';
 import { can, ref, state, settings, invalidate } from '../core/store.js';
 import { go, refresh } from '../core/router.js';
 import { reminderDialog, reminderSummaries, reminderCell, remindButton, reminderHistory } from '../core/reminder.js';
+import { receiptDialog, receiptsCard } from '../core/receipts.js';
 
 const now = new Date();
 
@@ -38,7 +39,7 @@ async function monthsView(){
     actions.append(pay, gen);
   }
   actions.append(el('a', { class:'btn', href:'#/charges/outstanding', text:'Outstanding' }));
-  actions.append(el('a', { class:'btn', href:'#/charges/payments',    text:'Payments' }));
+  actions.append(el('a', { class:'btn', href:'#/charges/payments',    text:'Payments & receipts' }));
   if (can('charges','waive')) actions.append(el('a', { class:'btn', href:'#/charges/adjustments', text:'Waivers' }));
   page.append(actions);
 
@@ -215,100 +216,6 @@ export async function paymentDialog(flatId){
   } catch { return null; }
 }
 
-async function receiptDialog(paymentId){
-  const p = await one('payments', b => b.eq('id', paymentId));
-  if (!p) return;
-  const flats = await ref('flats');
-  const flat = flats.find(f => f.id === p.flat_id);
-  const allocs = await q('payment_allocations', b => b.eq('payment_id', paymentId)).catch(() => []);
-  const charges = await q('v_flat_charges', b => b.eq('flat_id', p.flat_id)).catch(() => []);
-  const s = settings();
-
-  const lines = allocs.map(a => {
-    const c = charges.find(x => x.id === a.flat_charge_id);
-    return el('tr', {},
-      el('td', { text: c ? (c.charge_source === 'OPENING' ? 'Balance brought forward'
-                : monthName(c.period_year, c.period_month)) : 'Applied' }),
-      el('td', { class:'num', text: money(a.amount, { bare:true }) }));
-  });
-  const allocated = allocs.reduce((t,a) => t + Number(a.amount), 0);
-  const advance = Number(p.amount) - allocated;
-
-  const body = el('div', { id:'receiptBody' },
-    el('div', { class:'center', style:'margin-bottom:.6rem' },
-      el('h3', { style:'margin:0', text: s.building_name || 'Building' }),
-      el('div', { class:'small muted', text: s.address || '' }),
-      el('div', { class:'small', style:'margin-top:.3rem', text:'Service charge receipt' })),
-    el('dl', { class:'dl' },
-      el('dt', { text:'Receipt no' }), el('dd', { class:'mono', text: p.receipt_no }),
-      el('dt', { text:'Date' }),       el('dd', { text: fdate(p.payment_date) }),
-      el('dt', { text:'Flat' }),       el('dd', { text: flat?.flat_number || '' }),
-      el('dt', { text:'Received' }),   el('dd', { class:'num', style:'font-weight:700', text: money(p.amount) }),
-      el('dt', { text:'Method' }),     el('dd', { text: String(p.method).replace(/_/g,' ') }),
-      p.reference_no ? el('dt', { text:'Reference' }) : null,
-      p.reference_no ? el('dd', { text: p.reference_no }) : null),
-    lines.length ? el('div', { class:'tablewrap', style:'margin-top:.8rem' },
-      el('table', {}, el('thead', {}, el('tr', {}, el('th', {}, 'Applied to'), el('th', { class:'num' }, 'Amount'))),
-        el('tbody', {}, lines))) : null,
-    advance > 0.001 ? el('p', { class:'small', text: `Kept as advance: ${money(advance)}` }) : null);
-
-  // The same receipt as a picture. Owners forward and keep an image;
-  // they do not keep a wall of text, and six months later a picture is
-  // what settles "did I pay for September".
-  const asImage = async () => {
-    const { receiptImage, shareReceipt } = await import('../core/receipt.js');
-    const blob = await receiptImage({
-      building:  s.building_name || 'Building',
-      address:   s.address || '',
-      title:     'Service charge receipt',
-      receiptNo: p.receipt_no,
-      date:      fdate(p.payment_date),
-      flat:      flat?.flat_number || '',
-      method:    String(p.method).replace(/_/g,' '),
-      amount:    money(p.amount),
-      advance:   advance > 0.001 ? `Kept as advance: ${money(advance)}` : '',
-      lines:     allocs.map(a => {
-        const c = charges.find(x => x.id === a.flat_charge_id);
-        return { label: c ? (c.charge_source === 'OPENING' ? 'Balance brought forward'
-                                                           : monthName(c.period_year, c.period_month))
-                          : 'Applied',
-                 value: money(a.amount, { bare:true }) };
-      }),
-      footer: 'Thank you.'
-    });
-
-    const name = `receipt-${p.receipt_no || 'payment'}.png`;
-    const text = `${s.building_name || 'Building'} — service charge receipt ${p.receipt_no}`;
-    const how = await shareReceipt(blob, name, text);
-    if (how === 'downloaded') ok('Receipt image saved — attach it in WhatsApp');
-    if (how === 'shared')     ok('Receipt shared');
-  };
-
-  await modal({ title:'Receipt', body, actions:[
-    { label:'Print / PDF', value:'print' },
-    { label:'Send as image', kind:'primary', value:'img' },
-    { label:'Send as text', value:'wa' },
-    { label:'Done', value:null }
-  ]}).then(async (action) => {
-    if (action === 'print') window.print();
-    if (action === 'img'){
-      try { await asImage(); } catch (e){ err('Could not make the receipt image: ' + (e.message || e)); }
-    }
-    if (action === 'wa'){
-      const msg = [
-        `${s.building_name || 'Building'} — service charge receipt`,
-        `Receipt: ${p.receipt_no}`,
-        `Flat: ${flat?.flat_number || ''}`,
-        `Date: ${fdate(p.payment_date)}`,
-        `Amount: ${money(p.amount)}`,
-        advance > 0.001 ? `Advance kept: ${money(advance)}` : null,
-        'Thank you.'
-      ].filter(Boolean).join('\n');
-      window.open('https://wa.me/?text=' + encodeURIComponent(msg), '_blank', 'noopener');
-    }
-  });
-}
-
 /* ==================================================================
    OUTSTANDING
    ================================================================== */
@@ -436,6 +343,8 @@ async function statement(flatId){
     }
     page.append(waivable);
   }
+  const rc = await receiptsCard(flatId);
+  if (rc) page.append(rc);
   page.append(await reminderHistory(flatId));
   return page;
 }
@@ -472,7 +381,7 @@ async function waiverDialog(charge){
    PAYMENTS
    ================================================================== */
 async function paymentList(){
-  const rows = await q('payments', b => b.order('payment_date', { ascending:false }).limit(300));
+  const rows = await q('payments', b => b.order('payment_date', { ascending:false }).order('created_at', { ascending:false }).limit(2000));
   const flats = await ref('flats');
   const flatNo = (id) => flats.find(f => f.id === id)?.flat_number || '—';
 
@@ -485,7 +394,10 @@ async function paymentList(){
     { label:'Reference', fmt: r => r.reference_no || '—', csv: r => r.reference_no },
     { label:'Status', fmt: r => badge(r.status), csv: r => r.status },
     { label:'', fmt: r => {
-        if (r.status !== 'ACTIVE' || !can('charges','cancel')) return '';
+        const wrap = el('span', { class:'row-acts' },
+          el('button', { class:'btn small', text:'Receipt',
+            onclick: (e) => { e.stopPropagation(); receiptDialog(r.id); } }));
+        if (r.status !== 'ACTIVE' || !can('charges','cancel')) return wrap;
         const b = el('button', { class:'btn small danger', text:'Reverse' });
         b.onclick = async (e) => {
           e.stopPropagation();
@@ -495,18 +407,32 @@ async function paymentList(){
           try { await rpc('reverse_payment', { p_payment: r.id, p_reason: reason });
                 ok('Reversed. The charges it settled are open again.'); refresh(); } catch {}
         };
-        return b;
-      } }
+        wrap.append(b);
+        return wrap;
+      }, csv: () => null }
   ];
+  const csvCols = cols.slice(0, -1);
+  const search = el('input', { type:'search', placeholder:'Search receipt no, flat or reference…' });
+  const host = el('div', {});
+  const paint = () => {
+    const t = search.value.trim().toLowerCase();
+    const list = t ? rows.filter(r => [r.receipt_no, flatNo(r.flat_id), r.reference_no, r.payer_name]
+      .some(x => String(x || '').toLowerCase().includes(t))) : rows;
+    host.replaceChildren(table(cols, list, { onRow: r => receiptDialog(r.id),
+      empty: rows.length ? 'No receipt matches that search.' : 'No payments recorded yet.' }));
+  };
+  search.oninput = paint;
+  paint();
 
   return el('div', {},
-    el('div', { class:'page-head' }, el('h1', { text:'Payments received' })),
+    el('div', { class:'page-head' }, el('h1', { text:'Payments received' }),
+      el('p', { class:'sub', text:'Every receipt ever issued. Tap one to see it and send it again — receipts are rebuilt from the payment record, so they never expire and take no storage.' })),
     el('div', { class:'toolbar' },
       el('a', { class:'btn', href:'#/charges', text:'← Service charge' }),
-      el('span', { class:'spacer' }),
+      el('div', { class:'grow' }, search),
       can('charges','export') ? el('button', { class:'btn small', text:'Export CSV',
-        onclick: () => downloadCSV('payments.csv', cols, rows) }) : null),
-    table(cols, rows, { empty:'No payments recorded yet.' }));
+        onclick: () => downloadCSV('payments.csv', csvCols, rows) }) : null),
+    host);
 }
 
 /* ==================================================================

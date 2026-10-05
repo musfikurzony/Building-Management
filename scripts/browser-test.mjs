@@ -767,7 +767,7 @@ const run = async () => {
 
   await section('annual report and filters', async () => {
   await signIn(page, 'admin@test');
-  await gotoHash(page, '#/reports');
+  await gotoHash(page, '#/reports/entries');
   const rep = await page.textContent('main');
   check('the report offers an annual summary', /Annual summary/.test(rep));
 
@@ -1380,6 +1380,210 @@ const run = async () => {
     check('a caretaker’s flat page shows no money and no Remind button',
           !/Outstanding|Send a reminder|Statement/.test(ct) && /Who lives here/.test(ct), ct.slice(0, 120).replace(/\s+/g,' '));
     await signIn(page, 'admin@test');
+  });
+
+  /* ---------------- RECEIPTS: SEE AND SEND AGAIN ----------------
+     Reported: after recording a payment the receipt could not be found
+     again, and "Print / PDF" printed the whole list of flats. */
+  await section('receipts can be opened and sent again', async () => {
+    await signIn(page, 'admin@test');
+    await gotoHash(page, '#/charges/payments');
+    const n = await page.locator('main tbody tr').count();
+    check('the payments list shows every receipt', n > 0, String(n));
+    check('each with a Receipt button', await page.locator('main tbody button:has-text("Receipt")').count() === n);
+    // A reversed payment's receipt opens too, stamped and with nothing to send.
+    const rev = page.locator('main tbody tr', { hasText: /reversed/i });
+    if (await rev.count()){
+      await rev.first().click();
+      await page.waitForSelector('.modal #receiptBody', { timeout: 5000 });
+      const rt = await page.textContent('.modal');
+      check('a reversed payment\u2019s receipt says so and cannot be sent',
+            /was reversed/.test(rt) && !(await page.isVisible('.modal button:has-text("Send as image")')));
+      await page.locator('.modal button:has-text("Done")').click();
+    }
+    await page.locator('main tbody tr', { hasNotText: /reversed/i }).first().click();
+    await page.waitForSelector('.modal #receiptBody', { timeout: 5000 });
+    check('tapping a payment opens its receipt', await page.isVisible('.modal #receiptBody'));
+
+    const [pdf] = await Promise.all([page.waitForEvent('download', { timeout: 15000 }),
+                                     page.click('.modal button:has-text("Receipt PDF")')]);
+    const pbuf = fs.readFileSync(await pdf.path());
+    check('Receipt PDF gives a .pdf file', /^receipt-.*\.pdf$/.test(pdf.suggestedFilename()), pdf.suggestedFilename());
+    check('that really is a PDF', pbuf.slice(0, 5).toString() === '%PDF-', pbuf.slice(0, 8).toString());
+    const ptxt = pbuf.toString('latin1');
+    check('with the receipt picture on one A4 page', /\/DCTDecode/.test(ptxt) && /\/MediaBox \[0 0 595\.28 841\.89\]/.test(ptxt) && /\/Count 1/.test(ptxt));
+    check('and a well-formed cross-reference table', (() => {
+      const at = Number((ptxt.match(/startxref\n(\d+)/) || [])[1]);
+      return ptxt.slice(at, at + 4) === 'xref';
+    })());
+
+    const [img] = await Promise.all([page.waitForEvent('download', { timeout: 15000 }),
+                                     page.click('.modal button:has-text("Send as image")')]);
+    const ibuf = fs.readFileSync(await img.path());
+    check('Send as image still gives a PNG on a laptop', ibuf[0] === 0x89 && ibuf[1] === 0x50, img.suggestedFilename());
+
+    const waHref = await page.getAttribute('.modal a.btn[href*="wa.me"]', 'href').catch(() => null);
+    check('the text option is a WhatsApp link on a laptop', !!waHref && waHref.startsWith('https://wa.me/'), waHref);
+
+    // Print must print the receipt, not the page behind it.
+    await page.evaluate(() => document.body.classList.add('printing-receipt'));
+    await page.emulateMedia({ media: 'print' });
+    const printed = await page.evaluate(() => ({
+      app: getComputedStyle(document.querySelector('#app')).display,
+      receipt: getComputedStyle(document.querySelector('#receiptBody')).display,
+      buttons: getComputedStyle(document.querySelector('.receipt-actions')).display }));
+    await page.emulateMedia({ media: 'screen' });
+    await page.evaluate(() => document.body.classList.remove('printing-receipt'));
+    check('Print shows only the receipt on paper', printed.app === 'none' && printed.receipt !== 'none' && printed.buttons === 'none',
+          JSON.stringify(printed));
+    await page.locator('.modal button:has-text("Done")').click();
+
+    const a102 = (await dbq('flats', { flat_number:'A-102' }))[0];
+    await gotoHash(page, '#/flats/' + a102.id);
+    await page.waitForTimeout(500);
+    check('the flat page lists its receipts', /Receipts/.test(await page.textContent('main')) &&
+          await page.locator('main section:has(h2:text-is("Receipts")) tbody tr').count() > 0);
+    await gotoHash(page, '#/charges/flat/' + a102.id);
+    await page.waitForTimeout(500);
+    check('and so does the statement', await page.locator('main section:has(h2:text-is("Receipts")) tbody tr').count() > 0);
+  });
+
+  /* ---------------- WHATSAPP ON A PHONE ----------------
+     Reported: on a phone the WhatsApp button opened a "Download
+     WhatsApp" web page instead of the installed app. */
+  await section('WhatsApp opens the installed app on a phone', async () => {
+    const pctx = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true,
+      userAgent: 'Mozilla/5.0 (Linux; Android 14; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0 Mobile Safari/537.36' });
+    const ph = await pctx.newPage();
+    await signIn(ph, 'admin@test');
+    const z = await ph.evaluate(async () => (await (await import('/core/db.js')).q('v_flat_dues', b => b.eq('flat_number', 'Z-901')))[0]);
+    await ph.evaluate(id => { location.hash = '#/flats/' + id; }, z.flat_id);
+    await ph.waitForTimeout(1200);
+    await ph.evaluate(() => [...document.querySelectorAll('main button')].find(b => b.textContent.trim() === 'Send a reminder')?.click());
+    await ph.waitForSelector('.modal .rem', { timeout: 5000 });
+    const a = await ph.evaluate(() => {
+      const l = [...document.querySelectorAll('.modal a')].find(x => /WhatsApp/.test(x.textContent));
+      return { href: l?.getAttribute('href') || '', target: l?.getAttribute('target') };
+    });
+    check('on a phone the reminder opens the WhatsApp app itself', a.href.startsWith('whatsapp://send?phone=8801812000111&text='), a.href.slice(0, 60));
+    check('in the same tab, so it is never caught in a browser page', !a.target, String(a.target));
+    await pctx.close();
+  });
+
+  /* ---------------- MONTHLY REPORT ---------------- */
+  await section('the monthly report', async () => {
+    await gotoHash(page, '#/reports');
+    await page.click('main button:has-text("This month")');
+    await page.waitForTimeout(1800);
+    const txt = await page.textContent('main');
+    for (const h of ['1. Income by department', '2. Expense by department', '3. Result', '4. Cash and bank',
+                     '5. Reserve and other funds', '6. Service charge', 'A. Income entries', 'B. Expense entries',
+                     'C. Transfers and fund movements', 'D. Service charge flat by flat'])
+      check(`the report has "${h}"`, txt.includes(h));
+    check('with lines to sign', /Prepared by/.test(txt) && /Approved by/.test(txt));
+
+    const shown = await page.evaluate(() => {
+      const st = [...document.querySelectorAll('main .stat')].find(x => /Total income/.test(x.textContent));
+      return Number((st?.querySelector('.value')?.textContent || '').replace(/[^\d.]/g, ''));
+    });
+    const sql = await page.evaluate(async () => {
+      const db = await import('/core/db.js');
+      const d = new Date(); const pad = n => String(n).padStart(2, '0');
+      const from = `${d.getFullYear()}-${pad(d.getMonth()+1)}-01`;
+      const to = `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(new Date(d.getFullYear(), d.getMonth()+1, 0).getDate())}`;
+      const rows = await db.rpc('report_income_expense', { p_from: from, p_to: to });
+      const entries = await db.q('v_transactions', b => b.eq('counts_in_totals', true).eq('direction', 'INCOME').gte('txn_date', from).lte('txn_date', to));
+      return { report: Math.round(rows.filter(r => r.direction === 'INCOME').reduce((t, r) => t + Number(r.amount), 0)),
+               entries: Math.round(entries.reduce((t, r) => t + Number(r.amount), 0)) };
+    });
+    check('total income on the page is the SQL figure', shown === sql.report && sql.report > 0, `${shown} vs ${sql.report}`);
+    check('and equals the income entries listed behind it', sql.report === sql.entries, `${sql.report} vs ${sql.entries}`);
+
+    await page.emulateMedia({ media: 'print' });
+    const pr = await page.evaluate(() => ({
+      tabs: getComputedStyle(document.querySelector('.tabs')).display,
+      controls: getComputedStyle(document.querySelector('.report-controls')).display,
+      letter: getComputedStyle(document.querySelector('.report .letterhead')).display,
+      breaks: [...document.querySelectorAll('.report .page-break')].filter(x => getComputedStyle(x).breakBefore === 'page').length }));
+    await page.emulateMedia({ media: 'screen' });
+    check('on paper: no menus or controls, a letterhead', pr.tabs === 'none' && pr.controls === 'none' && pr.letter === 'block', JSON.stringify(pr));
+    check('and each detail list starts on a new page', pr.breaks === 4, String(pr.breaks));
+
+    await page.click('main label:has-text("Include the detail pages") input');
+    check('the detail pages can be left out', !(await page.isVisible('text=A. Income entries')));
+    await page.click('main label:has-text("Include the detail pages") input');
+
+    const [x] = await Promise.all([page.waitForEvent('download', { timeout: 15000 }),
+                                   page.click('main button:has-text("Export Excel")')]);
+    const xb = fs.readFileSync(await x.path()).toString('latin1');
+    check('Excel export of the month', /^financial-report-\d{4}-\d{2}\.xlsx$/.test(x.suggestedFilename()), x.suggestedFilename());
+    check('with a sheet for every part of the report', (xb.match(/xl\/worksheets\/sheet\d+\.xml/g) || []).length >= 18,
+          String((xb.match(/xl\/worksheets\/sheet\d+\.xml/g) || []).length));
+
+    await page.selectOption('main .report-controls select >> nth=0', 'year');
+    await page.waitForTimeout(1500);
+    check('the same report for a whole year', /Financial report — Year \d{4}/.test(await page.textContent('main')));
+  });
+
+  /* ---------------- FUNDS: OPENING BALANCE, SPENDING, LPG ---------------- */
+  await section('custom funds and the LPG emergency fund', async () => {
+    await gotoHash(page, '#/reserve');
+    await page.click('main button:has-text("New fund")');
+    await page.waitForSelector('.modal');
+    await page.locator('.modal input[type=text]').nth(0).fill('lpg');
+    await page.locator('.modal input[type=text]').nth(1).fill('LPG emergency fund');
+    await page.locator('.modal input[type=text]').nth(2).fill('Cylinder before the meter collection');
+    await page.locator('.modal label:has-text("Balance it already has") input').fill('20000');
+    await page.locator('.modal button:has-text("Create fund")').click();
+    await page.waitForTimeout(1500);
+    const f = (await dbq('v_fund_balances', { code:'LPG' }))[0];
+    check('a fund can start with the money it already has', Number(f?.current_balance) === 20000, f?.current_balance);
+
+    await gotoHash(page, '#/reserve/' + f.fund_id);
+    await page.click('main button:has-text("Take money out")');
+    await page.waitForSelector('.modal .choice-list');
+    check('taking money out offers three plain choices', await page.locator('.modal .choice').count() === 3);
+    check('and starts on "Spent from the fund"', await page.locator('.modal .choice.on').textContent().then(t => /Spent from the fund/.test(t)));
+    const cat = await page.evaluate(() => {
+      const sel = [...document.querySelectorAll('.modal label.field')].find(l => /Category/.test(l.textContent))?.querySelector('select');
+      return sel?.selectedOptions[0]?.textContent || '';
+    });
+    check('an LPG fund picks the LPG category by itself', /LPG/.test(cat), cat);
+    await page.locator('.modal label:has-text("Amount") input').fill('3000');
+    await page.evaluate(() => {
+      const sel = [...document.querySelectorAll('.modal label.field')].find(l => /Paid from account/.test(l.textContent))?.querySelector('select');
+      sel.selectedIndex = 1; sel.dispatchEvent(new Event('change'));
+    });
+    await page.locator('.modal button:has-text("Record")').click();
+    await page.waitForTimeout(1600);
+    const f2 = (await dbq('v_fund_balances', { code:'LPG' }))[0];
+    check('spending from the fund lowers it', Number(f2.current_balance) === 17000, f2.current_balance);
+    const spent = await page.evaluate(async () => {
+      const db = await import('/core/db.js');
+      return (await db.q('v_transactions', b => b.eq('source_module', 'reserve').eq('direction', 'EXPENSE')
+        .order('created_at', { ascending:false }).limit(1)))[0];
+    });
+    check('and records a real expense under LPG', spent && /LPG/.test(spent.department_name) && spent.status === 'POSTED'
+          && Number(spent.amount) === 3000,
+          spent ? `${spent.department_name} ${spent.status}` : 'none');
+
+    await gotoHash(page, '#/reports');
+    await page.click('main button:has-text("This month")');
+    await page.waitForTimeout(1800);
+    const rep = await page.textContent('main');
+    check('the fund appears in the monthly report', /LPG emergency fund/.test(rep));
+    check('and its spending under its own department', /LPG \(emergency fund\)/.test(rep));
+  });
+
+  await section('a new department from Settings', async () => {
+    await gotoHash(page, '#/settings');
+    await page.click('main button:has-text("New department")');
+    await page.waitForSelector('.modal');
+    await page.locator('.modal input[type=text]').fill('Water pump');
+    await page.locator('.modal button:has-text("Create")').click();
+    await page.waitForTimeout(1400);
+    const d = await page.evaluate(async () => (await (await import('/core/db.js')).q('departments', b => b.eq('name', 'Water pump')))[0]);
+    check('a department can be added from Settings', !!d && d.code === 'WATER_PUMP', JSON.stringify(d));
   });
 
   /* ---------------- SYSTEM RESET ----------------

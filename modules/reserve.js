@@ -156,9 +156,11 @@ async function fundDialog(fund){
       { value:'RESERVE',   label:'General reserve' },
       { value:'SINKING',   label:'Sinking / replacement fund' },
       { value:'EMERGENCY', label:'Emergency fund' },
-      { value:'PROJECT',   label:'Specific project' }
+      { value:'PROJECT',   label:'Specific purpose (e.g. LPG, festival, a project)' }
     ], { value: f.fund_type || 'RESERVE' });
   const purpI = el('input', { type:'text', value: f.purpose || '', maxlength:'200' });
+  const openI = el('input', { type:'number', step:'0.01', min:'0', value: f.opening_balance ?? '', inputmode:'decimal' });
+  const odatI = el('input', { type:'date', value: f.opening_date || todayISO() });
   const targI = el('input', { type:'number', step:'0.01', min:'0', value: f.target_amount ?? '' });
   const tdatI = el('input', { type:'date', value: f.target_date || '' });
   const accounts = await ref('accounts');   // entry_accounts() already excludes FD and inactive
@@ -174,6 +176,9 @@ async function fundDialog(fund){
       field('Name', nameI, { required:true }),
       field('Type', typeI),
       field('Purpose', purpI, { hint:'What this money is for, in plain words.' }),
+      el('div', { class:'grid g-form' },
+        field('Balance it already has', openI, { hint:'Money already set aside before this fund was entered here. Leave blank for none.' }),
+        field('As of', odatI)),
       field('Target amount', targI, { hint:'Optional. Leave blank until the committee agrees one.' }),
       field('Target date', tdatI),
       field('Held in account', acctI, { hint:'Give the fund its own account and its backing becomes unambiguous.' }),
@@ -188,8 +193,15 @@ async function fundDialog(fund){
     purpose: purpI.value.trim() || null,
     target_amount: targI.value === '' ? null : Number(targI.value),
     target_date: tdatI.value || null, account_id: acctI.value || null,
-    notes: noteI.value.trim() || null
+    notes: noteI.value.trim() || null,
+    opening_balance: openI.value === '' ? 0 : Number(openI.value),
+    opening_date: odatI.value || todayISO()
   };
+  if (!(row.opening_balance >= 0)) return err('The opening balance cannot be negative.');
+  if (fund && Number(fund.opening_balance || 0) !== row.opening_balance &&
+      !await confirmBox('Change the opening balance?',
+        `From ${money(fund.opening_balance || 0)} to ${money(row.opening_balance)}. Every report from the opening date on will change with it. The change is recorded in the audit log.`,
+        'Change it')) return;
   try {
     if (fund) await update('funds', fund.id, row);
     else await insert('funds', { ...row, code: codeI.value.trim().toUpperCase() });
@@ -202,61 +214,99 @@ async function movementDialog(fund, direction){
   const isOut = direction === 'WITHDRAWAL';
   const dateI = el('input', { type:'date', value: todayISO(), required:true });
   const amtI  = el('input', { type:'number', step:'0.01', min:'0.01', required:true, inputmode:'decimal' });
-  const purpI = el('input', { type:'text', maxlength:'200' });
+  const purpI = el('input', { type:'text', maxlength:'200',
+    placeholder: isOut ? 'e.g. Cylinder for October, lift motor, committee resolution 12' : 'e.g. Monthly contribution, repaid from LPG collection' });
   const noteI = el('textarea', { rows:'2' });
 
-  const accounts = await ref('accounts');   // entry_accounts() already excludes FD and inactive
-  const fromI = select(opts(accounts, 'id', a => a.name),
-                       { value: isOut ? (fund.account_id || '') : '', placeholder:'Choose an account' });
-  const toI   = select(opts(accounts, 'id', a => a.name),
-                       { value: isOut ? '' : (fund.account_id || ''), placeholder:'Choose an account' });
+  const [accounts, cats, depts] = await Promise.all([ref('accounts'), ref('categories'), ref('departments')]);
+  const acctOpts = opts(accounts, 'id', a => a.name);
+  const fromI = select(acctOpts, { value: isOut ? (fund.account_id || '') : '', placeholder:'Choose an account' });
+  const toI   = select(acctOpts, { value: isOut ? '' : (fund.account_id || ''), placeholder:'Choose an account' });
+  const oneI  = select(acctOpts, { value: fund.account_id || '', placeholder:'Choose an account' });
 
-  // The distinction that makes this module honest, put to the user as a
-  // question in their own words rather than as a flag called
-  // "is_cash_movement".
-  const cashI = el('input', { type:'checkbox' });
-  cashI.checked = true;
-  const accountsBox = el('div', {},
+  // Categories that fit: expenses for money spent, income for money received.
+  const want = isOut ? 'EXPENSE' : 'INCOME';
+  const deptName = (id) => (depts.find(d => d.id === id) || {}).name || '';
+  const fitting = cats.filter(c => c.txn_type === want || c.txn_type === 'BOTH')
+    .sort((a, b) => deptName(a.department_id).localeCompare(deptName(b.department_id)) || a.name.localeCompare(b.name));
+  const catI = select(fitting.map(c => ({ value:c.id, label:`${deptName(c.department_id)} — ${c.name}` })),
+                      { placeholder: isOut ? 'What was it spent on?' : 'What is this income?' });
+  // An LPG fund lands on the LPG category without anyone hunting for it.
+  if (/lpg/i.test(`${fund.name} ${fund.code}`)){
+    const lpg = fitting.find(c => /lpg/i.test(deptName(c.department_id)));
+    if (lpg) catI.value = lpg.id;
+  }
+  const methI = select([
+    { value:'CASH', label:'Cash' }, { value:'BANK_TRANSFER', label:'Bank transfer' },
+    { value:'CHEQUE', label:'Cheque' }, { value:'BKASH', label:'bKash' }, { value:'NAGAD', label:'Nagad' },
+    { value:'ROCKET', label:'Rocket' }, { value:'CARD', label:'Card' }], { value:'CASH' });
+
+  // How the money moved — the distinction that keeps the fund honest, asked
+  // as a plain question rather than as flags.
+  const MODES = isOut ? [
+    { value:'DIRECT',   title:'Spent from the fund', text:'Money paid out for something — recorded as an expense, so it shows in the report.' },
+    { value:'TRANSFER', title:'Moved to another of our accounts', text:'e.g. from the reserve account back to the main account. Not an expense.' },
+    { value:'EARMARK',  title:'Decision only — no money moved', text:'The committee releases part of the earmark; the money stays where it is.' }
+  ] : [
+    { value:'DIRECT',   title:'Received into the fund', text:'Money that came in from outside — e.g. repaid from the LPG collection. Recorded as income.' },
+    { value:'TRANSFER', title:'Moved from another of our accounts', text:'e.g. this month’s contribution from the main account to the reserve account. Not income.' },
+    { value:'EARMARK',  title:'Decision only — no money moved', text:'The committee sets money aside on paper; the fund will show as not yet funded.' }
+  ];
+  let mode = isOut ? 'DIRECT' : 'TRANSFER';
+  const directBox = el('div', {},
+    field(isOut ? 'Paid from account' : 'Received into account', oneI),
+    field('Category', catI, { hint:'Where it appears in the income & expense report. Add categories in Settings.' }),
+    field('Paid by', methI));
+  const transferBox = el('div', {},
     field(isOut ? 'Out of account' : 'From account', fromI),
     field('Into account', toI));
-  const sync = () => { accountsBox.style.display = cashI.checked ? '' : 'none'; };
-  cashI.onchange = sync;
+  const radios = el('div', { class:'choice-list', role:'radiogroup' });
+  const sync = () => {
+    directBox.hidden = mode !== 'DIRECT';
+    transferBox.hidden = mode !== 'TRANSFER';
+    for (const r of radios.querySelectorAll('input')) r.closest('.choice').classList.toggle('on', r.checked);
+  };
+  for (const m of MODES){
+    const r = el('input', { type:'radio', name:'fund-mode', value: m.value });
+    r.checked = m.value === mode;
+    r.onchange = () => { mode = m.value; sync(); };
+    radios.append(el('label', { class:'choice' }, r,
+      el('span', {}, el('b', { text: m.title }), el('span', { class:'small muted', text: m.text }))));
+  }
   sync();
 
   const res = await modal({
     title: isOut ? `Take money out of ${fund.name}` : `Put money into ${fund.name}`,
     body: el('div', {},
-      field('Date', dateI, { required:true }),
-      field('Amount', amtI, { required:true }),
-      field('Did money actually move between accounts?',
-        el('label', { class:'check' }, cashI,
-          el('span', {}, 'Yes — transfer the money as well as recording the decision')),
-        { hint: isOut
-            ? 'Leave this ticked when the money really leaves the reserve account. Untick it if the committee is only releasing an earmark.'
-            : 'Leave this ticked when the money really moves. Untick it if the committee is only minuting a decision — the fund will then show as not funded, which is the truth.' }),
-      accountsBox,
-      field('Purpose', purpI, { hint:'Board resolution number, or what this is for.' }),
+      el('div', { class:'grid g-form' }, field('Date', dateI, { required:true }), field('Amount', amtI, { required:true })),
+      el('div', { class:'field' }, el('span', { text:'How did the money move?' }), radios),
+      directBox, transferBox,
+      field('Purpose', purpI, { hint:'Shown in the fund history and the monthly report.' }),
       field('Notes', noteI)),
-    actions: [{ label:'Record', kind:'primary', value:'save' }]
+    actions: [{ label:'Cancel', value:null }, { label:'Record', kind:'primary', value:'save' }]
   });
   if (res !== 'save') return;
 
   const amt = Number(amtI.value);
   if (!(amt > 0)) return err('Enter an amount greater than zero.');
-  if (cashI.checked && (!fromI.value || !toI.value)) return err('Say which account the money comes from and goes to.');
-  if (cashI.checked && fromI.value === toI.value) return err('A transfer needs two different accounts.');
+  if (mode === 'DIRECT' && !oneI.value) return err(isOut ? 'Say which account it was paid from.' : 'Say which account it was received into.');
+  if (mode === 'DIRECT' && !catI.value) return err('Choose a category, so it appears in the right line of the report.');
+  if (mode === 'TRANSFER' && (!fromI.value || !toI.value)) return err('Say which account the money comes from and goes to.');
+  if (mode === 'TRANSFER' && fromI.value === toI.value) return err('A transfer needs two different accounts.');
 
   try {
     await rpc('record_fund_movement', {
       p_fund: fund.fund_id, p_date: dateI.value, p_direction: direction,
-      p_amount: amt, p_cash_backed: cashI.checked,
-      p_from_account: cashI.checked ? fromI.value : null,
-      p_to_account:   cashI.checked ? toI.value   : null,
-      p_purpose: purpI.value.trim() || null, p_notes: noteI.value.trim() || null
+      p_amount: amt, p_cash_backed: mode !== 'EARMARK',
+      p_from_account: mode === 'TRANSFER' ? fromI.value : (mode === 'DIRECT' && isOut ? oneI.value : null),
+      p_to_account:   mode === 'TRANSFER' ? toI.value   : (mode === 'DIRECT' && !isOut ? oneI.value : null),
+      p_purpose: purpI.value.trim() || null, p_notes: noteI.value.trim() || null,
+      ...(mode === 'DIRECT' ? { p_category: catI.value, p_method: methI.value } : {})
     });
-    ok(cashI.checked ? 'Recorded, and the money was transferred.' : 'Earmark recorded. No money moved.');
-    invalidate('accounts'); refresh();
-  } catch (e){ err(e.message); }
+    ok(mode === 'DIRECT' ? (isOut ? 'Recorded as an expense from the fund.' : 'Recorded as income into the fund.')
+       : mode === 'TRANSFER' ? 'Recorded, and the money was transferred.' : 'Earmark recorded. No money moved.');
+    invalidate('accounts', 'balances'); refresh();
+  } catch (e){ /* the toast explains */ }
 }
 
 /* ------------------------------------------------------------------ */

@@ -17,6 +17,7 @@ import { q, one, insert, update, rpc, logEvent, isMissingObject, friendly } from
 import { can, ref, invalidate, settings } from '../core/store.js';
 import { go, refresh } from '../core/router.js';
 import { reminderDialog, reminderHistory, reminderSummaries } from '../core/reminder.js';
+import { receiptsCard } from '../core/receipts.js';
 
 export async function render({ params }){
   if (params[0] === 'owners') return peopleView();
@@ -257,7 +258,11 @@ async function flatPage(flatId){
   if (flat.notes) page.append(el('section', { class:'card' },
     el('div', { class:'card-head' }, el('h2', { text:'Notes' })), el('p', { text: flat.notes })));
 
-  if (can('charges','view')) page.append(await reminderHistory(flatId));
+  if (can('charges','view')){
+    const rc = await receiptsCard(flatId, { limit: 12 });
+    if (rc) page.append(rc);
+    page.append(await reminderHistory(flatId));
+  }
 
   const past = hist.filter(h => h.to_date);
   if (past.length){

@@ -241,6 +241,8 @@ const run = async () => {
 
   /* ---------- 8. Does the report agree? ---------- */
   await go(page, '#/reports');
+  await page.waitForTimeout(1200);
+  await clickText(page, 'This month');       // early in a month it opens on last month
   await page.waitForTimeout(1600);
   const report = await page.textContent('main').catch(() => '');
   step('the report page shows the income just entered',
@@ -268,6 +270,8 @@ const run = async () => {
   await page.waitForTimeout(2500);
   step('Export Excel produces a file', dl.some(f => /\.xlsx$/i.test(f)), dl.join(', '));
 
+  await go(page, '#/reports/entries');
+  await page.waitForTimeout(1600);
   await clickText(page, 'Export CSV');
   await page.waitForTimeout(1800);
   step('Export CSV produces a file', dl.some(f => /\.csv$/i.test(f)), dl.join(', '));

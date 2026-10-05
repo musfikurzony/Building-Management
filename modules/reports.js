@@ -4,9 +4,9 @@
 
 import { el, field, select, money, money0, num, fdate, table, stat, emptyState,
          downloadCSV, todayISO, monthName, letterhead } from '../core/ui.js';
-import { q, logEvent } from '../core/db.js';
+import { q, rpc, logEvent, isMissingObject } from '../core/db.js';
 import { downloadXLSX } from '../core/xlsx.js';
-import { can, ref, settings } from '../core/store.js';
+import { can, ref, settings, state } from '../core/store.js';
 
 /* The two buttons every report carries. Kept here so the date-range
    statement and the annual summary cannot drift apart. */
@@ -33,17 +33,27 @@ const head = (title, period) => {
 const now = new Date();
 
 export async function render({ params }){
-  if (params && params[0] === 'annual') return annual();
-  return statement();
+  if (params && params[0] === 'annual')  return annual();
+  if (params && params[0] === 'entries') return statement();
+  return monthly();
+}
+
+/** The three report screens, one tap apart. */
+function tabs(active){
+  const t = (href, key, label) => el('a', { class:'tab' + (active === key ? ' on' : ''), href,
+    'aria-current': active === key ? 'page' : null, text: label });
+  return el('nav', { class:'tabs', 'aria-label':'Reports' },
+    t('#/reports', 'monthly', 'Monthly report'),
+    t('#/reports/entries', 'entries', 'Search entries'),
+    t('#/reports/annual', 'annual', 'Annual summary'));
 }
 
 async function statement(){
   const page = el('div', {});
   page.append(el('div', { class:'page-head' },
     el('h1', { text:'Reports' }),
-    el('p', { class:'sub', text:'Posted transactions only. Transfers between our own accounts are excluded from income and expense.' })));
-  page.append(el('div', { class:'toolbar' },
-    el('a', { class:'btn', href:'#/reports/annual', text:'Annual summary' })));
+    el('p', { class:'sub', text:'Search and filter every posted entry. Transfers between our own accounts are excluded from income and expense.' })));
+  page.append(tabs('entries'));
 
   const fromI = el('input', { type:'date', value:`${now.getFullYear()}-01-01` });
   const toI   = el('input', { type:'date', value: todayISO() });
@@ -211,7 +221,7 @@ async function statement(){
     for (const c of [fDept, fCat, fVendor, fMethod]) c.onchange = paintDetail;
     fText.oninput = paintDetail;
 
-    const detailCard = el('section', { class:'card' },
+    const detailCard = el('section', { class:'card page-break' },
       el('div', { class:'card-head' }, el('h2', { text:'All entries' }),
         can('reports','export') ? el('button', { class:'btn small', text:'Export CSV', onclick: () => {
           const rows = filtered();
@@ -252,8 +262,8 @@ async function annual(){
   page.append(el('div', { class:'page-head' },
     el('h1', { text:'Annual summary' }),
     el('p', { class:'sub', text:'Month by month, with the running balance the monthly figures alone will not show you.' })));
+  page.append(tabs('annual'));
   page.append(el('div', { class:'toolbar' },
-    el('a', { class:'btn', href:'#/reports', text:'← Date-range report' }),
     el('div', { style:'flex:0 0 8rem' }, field('Year', yearI))));
 
   const body = el('div', {});
@@ -399,3 +409,416 @@ async function annual(){
   await load();
   return page;
 }
+
+/* =====================================================================
+   THE MONTHLY REPORT — what the finance controller prints and files.
+
+   Page 1 is the summary a committee reads: income by department, expense
+   by department, the result, every account from opening to closing, every
+   reserve fund, the fixed deposits and the service-charge collection,
+   with lines to sign. Every page after it is evidence — each income
+   entry, each expense entry, each transfer and fund movement, and the
+   service charge flat by flat — and each starts on a fresh sheet of
+   paper, so the summary can be read on its own and the detail filed
+   behind it.
+
+   Every total on it comes from a SQL function (086_reports_funds.sql);
+   the screen only lays them out. The detail lists are the rows those
+   totals were made from, so their footers match the summary exactly.
+   ===================================================================== */
+const MONTHS_LONG = ['January','February','March','April','May','June','July',
+                     'August','September','October','November','December'];
+const isoDate = (d) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+const methodName = (m) => String(m || '').replace(/_/g, ' ').toLowerCase().replace(/^\w/, c => c.toUpperCase());
+
+async function monthly(){
+  const page = el('div', { class:'monthly-report' });
+  page.append(el('div', { class:'page-head' },
+    el('h1', { text:'Reports' }),
+    el('p', { class:'sub', text:'The monthly financial report: a summary to read and sign, then every entry behind it on separate pages for filing.' })));
+  page.append(tabs('monthly'));
+
+  // In the first ten days of a month the report being made is last
+  // month's — it has just closed. After that, this month's.
+  const last = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  const start = now.getDate() <= 10 ? last : new Date(now.getFullYear(), now.getMonth(), 1);
+  const kindI  = select([{ value:'month', label:'A month' }, { value:'range', label:'Date range' }, { value:'year', label:'A whole year' }],
+                        { value:'month' });
+  const monthI = select(MONTHS_LONG.map((m, i) => ({ value: i + 1, label: m })), { value: start.getMonth() + 1 });
+  const years  = Array.from({ length: 6 }, (_, i) => now.getFullYear() + 1 - i).map(y => ({ value:y, label:String(y) }));
+  const yearI  = select(years, { value: start.getFullYear() });
+  const fromI  = el('input', { type:'date', value: isoDate(start) });
+  const toI    = el('input', { type:'date', value: isoDate(new Date(start.getFullYear(), start.getMonth() + 1, 0)) });
+  const detailI = el('input', { type:'checkbox' }); detailI.checked = true;
+
+  const fMonth = el('div', { class:'ctl' }, field('Month', monthI));
+  const fYear  = el('div', { class:'ctl' }, field('Year', yearI));
+  const fFrom  = el('div', { class:'ctl' }, field('From', fromI));
+  const fTo    = el('div', { class:'ctl' }, field('To', toI));
+  const quick = (label, fn) => el('button', { class:'btn small', type:'button', text: label, onclick: () => { fn(); load(); } });
+  const setMonth = (d) => { kindI.value = 'month'; monthI.value = d.getMonth() + 1; yearI.value = d.getFullYear(); };
+
+  const range = () => {
+    if (kindI.value === 'month'){
+      const y = Number(yearI.value), m = Number(monthI.value);
+      return { from: isoDate(new Date(y, m - 1, 1)), to: isoDate(new Date(y, m, 0)),
+               label: `${MONTHS_LONG[m - 1]} ${y}`, file: `${y}-${String(m).padStart(2,'0')}` };
+    }
+    if (kindI.value === 'year'){
+      const y = Number(yearI.value);
+      return { from: `${y}-01-01`, to: `${y}-12-31`, label: `Year ${y}`, file: String(y) };
+    }
+    return { from: fromI.value, to: toI.value, label: `${fdate(fromI.value)} to ${fdate(toI.value)}`,
+             file: `${fromI.value}-to-${toI.value}` };
+  };
+  const syncKind = () => {
+    fMonth.hidden = kindI.value !== 'month';
+    fYear.hidden  = kindI.value === 'range';
+    fFrom.hidden = fTo.hidden = kindI.value !== 'range';
+  };
+  kindI.onchange = () => { syncKind(); load(); };
+  for (const c of [monthI, yearI, fromI, toI]) c.onchange = load;
+  detailI.onchange = () => page.classList.toggle('no-detail', !detailI.checked);
+
+  const actions = el('span', { class:'report-actions' });
+  page.append(el('div', { class:'toolbar report-controls' },
+    el('div', { class:'ctl' }, field('Report for', kindI)), fMonth, fYear, fFrom, fTo,
+    el('div', { class:'quick' },
+      quick('Last month', () => setMonth(last)),
+      quick('This month', () => setMonth(now))),
+    el('label', { class:'check', style:'min-height:auto' }, detailI, el('span', { text:'Include the detail pages' })),
+    el('span', { class:'spacer' }), actions));
+  syncKind();
+
+  const body = el('div', {});
+  page.append(body);
+
+  async function load(){
+    const r = range();
+    if (!r.from || !r.to || r.to < r.from){ body.replaceChildren(emptyState('Choose a start date before the end date.')); return; }
+    body.replaceChildren(el('p', { class:'muted', text:'Building the report…' }));
+    let data;
+    try { data = await gather(r); }
+    catch (e){
+      const o = e.original || e;
+      body.replaceChildren(isMissingObject(o)
+        ? el('div', { class:'alert normal' }, el('div', { class:'a-body' },
+            el('div', { class:'a-title', text:'The monthly report needs a database update' }),
+            el('div', { class:'a-meta', text:'In Supabase open the SQL Editor and run sql/PATCH.sql — it is safe to run twice — then reload this page. Until then, "Search entries" and "Annual summary" still work.' })))
+        : emptyState('The report could not be built: ' + (o.message || o)));
+      actions.replaceChildren();
+      return;
+    }
+    body.replaceChildren(renderReport(r, data));
+    actions.replaceChildren(...reportButtons(r, data));
+  }
+
+  await load();
+  return page;
+}
+
+/** Everything the report needs, fetched at once. */
+async function gather(r){
+  const args = { p_from: r.from, p_to: r.to };
+  const [ie, accts, funds, sc] = await Promise.all([
+    rpc('report_income_expense', args, { silent:true }),
+    rpc('report_accounts', args, { silent:true }),
+    rpc('report_funds', args, { silent:true }),
+    rpc('report_service_charge', args, { silent:true })
+  ]);
+  const [entries, transfers, moves, fds, flatCharges] = await Promise.all([
+    q('v_transactions', b => b.eq('counts_in_totals', true).gte('txn_date', r.from).lte('txn_date', r.to)
+      .order('txn_date').order('txn_no'), { silent:true }).catch(() => []),
+    q('v_transactions', b => b.eq('status', 'POSTED').eq('direction', 'TRANSFER').gte('txn_date', r.from).lte('txn_date', r.to)
+      .order('txn_date'), { silent:true }).catch(() => []),
+    q('fund_movements', b => b.gte('movement_date', r.from).lte('movement_date', r.to).order('movement_date'), { silent:true }).catch(() => []),
+    q('v_fixed_deposits', b => b.eq('status', 'ACTIVE').order('maturity_date'), { silent:true }).catch(() => null),
+    q('v_flat_charges', b => b.neq('charge_source', 'OPENING')
+      .gte('period_start', r.from.slice(0, 8) + '01').lte('period_start', r.to)
+      .order('period_year').order('period_month').order('flat_number'), { silent:true }).catch(() => [])
+  ]);
+  return { ie: ie || [], accts: accts || [], funds: funds || [], sc: (Array.isArray(sc) ? sc[0] : sc) || {},
+           entries, transfers, moves, fds, flatCharges };
+}
+
+/** Department → its categories, with the department subtotal from the SQL rows. */
+function byDepartment(rows){
+  const out = [];
+  for (const row of rows){
+    let d = out.find(x => x.name === row.department_name);
+    if (!d){ d = { name: row.department_name, lines: [], subtotal: 0 }; out.push(d); }
+    d.lines.push(row);
+  }
+  return out;
+}
+
+function deptTable(rows, total, emptyText){
+  if (!rows.length) return emptyState(emptyText);
+  const tbody = el('tbody');
+  for (const d of byDepartment(rows)){
+    const sub = d.lines.reduce((t, l) => t + Number(l.amount), 0);
+    tbody.append(el('tr', { class:'dept-row' },
+      el('td', { 'data-l':'Department', text: d.name }),
+      el('td', { class:'num', 'data-l':'Entries', text: num(d.lines.reduce((t, l) => t + Number(l.entries), 0)) }),
+      el('td', { class:'num', 'data-l':'Amount', text: money(sub, { bare:true }) })));
+    for (const l of d.lines){
+      tbody.append(el('tr', { class:'cat-row' },
+        el('td', { 'data-l':'Category', text: l.category_name }),
+        el('td', { class:'num', 'data-l':'Entries', text: num(l.entries) }),
+        el('td', { class:'num', 'data-l':'Amount', text: money(l.amount, { bare:true }) })));
+    }
+  }
+  return el('div', { class:'tablewrap' }, el('table', { class:'stack report-table' },
+    el('thead', {}, el('tr', {}, el('th', {}, 'Department / category'), el('th', { class:'num' }, 'Entries'), el('th', { class:'num' }, 'Amount'))),
+    tbody,
+    el('tfoot', {}, el('tr', {}, el('td', { text:'Total' }), el('td', {}), el('td', { class:'num', text: money(total, { bare:true }) })))));
+}
+
+function totals(data){
+  const sumOf = (rows, k) => rows.reduce((t, x) => t + Number(x[k] || 0), 0);
+  const income  = data.ie.filter(x => x.direction === 'INCOME');
+  const expense = data.ie.filter(x => x.direction === 'EXPENSE');
+  const money_ = data.accts.filter(a => a.kind !== 'FD');
+  const fdAcc  = data.accts.filter(a => a.kind === 'FD');
+  return {
+    income, expense,
+    inc: sumOf(income, 'amount'), exp: sumOf(expense, 'amount'),
+    money_, fdAcc,
+    open: sumOf(money_, 'opening'), close: sumOf(money_, 'closing'),
+    mIn: sumOf(money_, 'money_in'), mOut: sumOf(money_, 'money_out'),
+    fdClose: sumOf(fdAcc, 'closing'),
+    fOpen: sumOf(data.funds, 'opening'), fAdd: sumOf(data.funds, 'added'),
+    fUsed: sumOf(data.funds, 'used'), fClose: sumOf(data.funds, 'closing')
+  };
+}
+
+function renderReport(r, data){
+  const s = settings();
+  const t = totals(data);
+  const net = t.inc - t.exp;
+  const out = el('div', { class:'report' });
+
+  /* ---------------- PAGE 1: SUMMARY ---------------- */
+  out.append(letterhead({ name: s.building_name, address: s.address,
+    title: 'Monthly financial report', period: r.label }));
+  out.append(el('h2', { class:'report-title', text:`Financial report — ${r.label}` }),
+             el('p', { class:'small muted report-period', text:`${fdate(r.from)} to ${fdate(r.to)} · posted entries only` }));
+
+  out.append(el('div', { class:'grid g-stats' },
+    stat('Total income', money0(t.inc)),
+    stat('Total expense', money0(t.exp)),
+    stat(net >= 0 ? 'Surplus' : 'Deficit', money0(Math.abs(net)), null, net >= 0 ? 'good' : 'bad'),
+    stat('Cash & bank at the end', money0(t.close), `${money0(t.open)} at the start`)));
+
+  out.append(el('section', { class:'card' },
+    el('div', { class:'card-head' }, el('h2', { text:'1. Income by department' })),
+    deptTable(t.income, t.inc, 'No income in this period.')));
+
+  out.append(el('section', { class:'card' },
+    el('div', { class:'card-head' }, el('h2', { text:'2. Expense by department' })),
+    deptTable(t.expense, t.exp, 'No expense in this period.')));
+
+  out.append(el('section', { class:'card result-card' },
+    el('div', { class:'card-head' }, el('h2', { text:'3. Result' })),
+    el('dl', { class:'dl result' },
+      el('dt', { text:'Total income' }),  el('dd', { class:'num', text: money(t.inc) }),
+      el('dt', { text:'Total expense' }), el('dd', { class:'num', text: money(t.exp) }),
+      el('dt', { text: net >= 0 ? 'Surplus for the period' : 'Deficit for the period' }),
+      el('dd', { class:'num ' + (net >= 0 ? 'good' : 'bad'), text: money(Math.abs(net)) }))));
+
+  // Accounts: where the money is.
+  const acctCols = [
+    { label:'Account', primary:true, key:'name' },
+    { label:'Opening', cls:'num', fmt: a => money(a.opening, { bare:true }) },
+    { label:'Money in', cls:'num', fmt: a => money(a.money_in, { bare:true }) },
+    { label:'Money out', cls:'num', fmt: a => money(a.money_out, { bare:true }) },
+    { label:'Closing', cls:'num', fmt: a => money(a.closing, { bare:true }) }
+  ];
+  out.append(el('section', { class:'card' },
+    el('div', { class:'card-head' }, el('h2', { text:'4. Cash and bank' })),
+    table(acctCols, t.money_, { empty:'No accounts.', stack:true,
+      foot: [{ value:'Total' }, { cls:'num', value: money(t.open, { bare:true }) }, { cls:'num', value: money(t.mIn, { bare:true }) },
+             { cls:'num', value: money(t.mOut, { bare:true }) }, { cls:'num', value: money(t.close, { bare:true }) }] }),
+    el('p', { class:'hint', text:'Money in and out include transfers between our own accounts, so they are larger than income and expense; the totals of the two always agree.' })));
+
+  // Reserve funds.
+  const fundCols = [
+    { label:'Fund', primary:true, fmt: f => f.purpose ? `${f.name} — ${f.purpose}` : f.name },
+    { label:'Opening', cls:'num', fmt: f => money(f.opening, { bare:true }) },
+    { label:'Added', cls:'num', fmt: f => money(f.added, { bare:true }) },
+    { label:'Used', cls:'num', fmt: f => money(f.used, { bare:true }) },
+    { label:'Closing', cls:'num', fmt: f => money(f.closing, { bare:true }) },
+    { label:'Target', cls:'num', fmt: f => f.target_amount ? money(f.target_amount, { bare:true }) : '—' }
+  ];
+  const fundCard = el('section', { class:'card' },
+    el('div', { class:'card-head' }, el('h2', { text:'5. Reserve and other funds' })),
+    table(fundCols, data.funds, { empty:'No funds set up yet. Add them under Reserve & Deposits.',
+      foot: data.funds.length ? [{ value:'Total' }, { cls:'num', value: money(t.fOpen, { bare:true }) },
+        { cls:'num', value: money(t.fAdd, { bare:true }) }, { cls:'num', value: money(t.fUsed, { bare:true }) },
+        { cls:'num', value: money(t.fClose, { bare:true }) }, { value:'' }] : null }));
+  const shortNow = data.funds.filter(f => f.is_active && f.is_funded_now === false);
+  if (shortNow.length) fundCard.append(el('p', { class:'warn-line', text:
+    `Not fully backed by money today: ${shortNow.map(f => `${f.name} (${money0(Number(f.funded_now || 0))} held)`).join(', ')}.` }));
+  if (data.fds && data.fds.length){
+    fundCard.append(el('h3', { text:'Fixed deposits held' }), table([
+      { label:'Deposit', primary:true, fmt: d => `${d.fd_no} · ${d.bank_name}` },
+      { label:'Principal', cls:'num', fmt: d => money(d.principal, { bare:true }) },
+      { label:'Rate', cls:'num', fmt: d => d.interest_rate ? num(d.interest_rate, 2) + '%' : '—' },
+      { label:'Matures', fmt: d => d.maturity_date ? fdate(d.maturity_date) : '—' },
+      { label:'Held for', fmt: d => d.fund_name || d.purpose || '—' }
+    ], data.fds, { foot: [{ value:'In deposits at the end' }, { cls:'num', value: money(t.fdClose, { bare:true }) }, { value:'' }, { value:'' }, { value:'' }] }));
+  }
+  out.append(fundCard);
+
+  // Service charge.
+  const sc = data.sc;
+  out.append(el('section', { class:'card' },
+    el('div', { class:'card-head' }, el('h2', { text:'6. Service charge' })),
+    el('dl', { class:'dl' },
+      el('dt', { text:'Billed for the period' }), el('dd', { class:'num', text: money(sc.billed || 0) }),
+      el('dt', { text:'Paid of that so far' }), el('dd', { class:'num', text: `${money(sc.paid_against_billed || 0)} (${num(sc.collection_pct || 0, 1)}%)` }),
+      el('dt', { text:'Flats paid / part / unpaid' }), el('dd', { text: `${num(sc.paid_full || 0)} / ${num(sc.paid_partial || 0)} / ${num(sc.unpaid || 0)}` +
+        (r.from.slice(0, 7) !== r.to.slice(0, 7) ? ' (counted per flat per month)' : '') }),
+      el('dt', { text:'Received in the period' }), el('dd', { class:'num', text: `${money(sc.received_in_period || 0)} · ${num(sc.receipts_in_period || 0)} receipts` }),
+      el('dt', { text:'Outstanding today' }), el('dd', { class:'num', text: `${money(sc.outstanding_now || 0)} · ${num(sc.flats_owing_now || 0)} flats` }),
+      el('dt', { text:'Advances held today' }), el('dd', { class:'num', text: money(sc.advance_now || 0) }))));
+
+  // Sign-off.
+  const me = state.profile?.full_name || '';
+  out.append(el('section', { class:'card signoff' },
+    el('div', { class:'sign' }, el('div', { class:'sign-line' }), el('div', { text:'Prepared by' }), el('div', { class:'small muted', text: me })),
+    el('div', { class:'sign' }, el('div', { class:'sign-line' }), el('div', { text:'Checked by' })),
+    el('div', { class:'sign' }, el('div', { class:'sign-line' }), el('div', { text:'Approved by' }))));
+
+  /* ---------------- DETAIL PAGES ---------------- */
+  const detail = (title, intro, node) => el('section', { class:'card page-break detail-page' },
+    el('div', { class:'card-head' }, el('h2', { text: title })),
+    el('p', { class:'small muted', text: `${r.label} · ${intro}` }), node);
+
+  const inc = data.entries.filter(e => e.direction === 'INCOME');
+  const exp = data.entries.filter(e => e.direction === 'EXPENSE');
+  // Eight columns at most, so an entry list reads on portrait A4.
+  const entryCols = (who) => [
+    { label:'Date', cls:'nowrap', fmt: e => fdate(e.txn_date) },
+    { label:'No.', cls:'mono nowrap', key:'txn_no' },
+    { label:'Description', primary:true, key:'description' },
+    { label:'Filed under', fmt: e => [e.department_name, e.category_name].filter(Boolean).join(' · ') },
+    { label: who, fmt: e => (who === 'Paid to' ? e.vendor_name : e.flat_number ? 'Flat ' + e.flat_number : '') || '' },
+    { label:'Via', fmt: e => [methodName(e.payment_method), e.account_name].filter(Boolean).join(' · ') },
+    ...(who === 'Paid to' ? [{ label:'Approved by', fmt: e => e.approved_by_name || '' }] : []),
+    { label:'Amount', cls:'num nowrap', fmt: e => money(e.amount, { bare:true }) }
+  ];
+  const foot = (cols, n, total) => cols.map((c, i) =>
+    i === 0 ? { value:`${n} entries` } : i === cols.length - 2 ? { value:'Total' }
+    : i === cols.length - 1 ? { cls:'num nowrap', value: money(total, { bare:true }) } : { value:'' });
+
+  const incCols = entryCols('From'), expCols = entryCols('Paid to');
+  out.append(detail('A. Income entries', 'every income entry counted in section 1',
+    table(incCols, inc, { empty:'No income entries.', foot: inc.length ? foot(incCols, inc.length, t.inc) : null })));
+  out.append(detail('B. Expense entries', 'every expense entry counted in section 2',
+    table(expCols, exp, { empty:'No expense entries.', foot: exp.length ? foot(expCols, exp.length, t.exp) : null })));
+
+  const fundName = (id) => (data.funds.find(f => f.fund_id === id) || {}).name || '—';
+  const moveLabel = { CONTRIBUTION:'Put in', WITHDRAWAL:'Taken out', INTEREST:'Interest', TRANSFER_IN:'Transfer in', TRANSFER_OUT:'Transfer out' };
+  out.append(detail('C. Transfers and fund movements', 'money moved between our own accounts, and every change to a fund',
+    el('div', {},
+      el('h3', { text:'Transfers between accounts' }),
+      table([
+        { label:'Date', fmt: e => fdate(e.txn_date) },
+        { label:'No.', cls:'mono', key:'txn_no' },
+        { label:'Description', primary:true, key:'description' },
+        { label:'From', fmt: e => e.account_name || '' },
+        { label:'To', fmt: e => e.counter_account_name || '' },
+        { label:'Amount', cls:'num', fmt: e => money(e.amount, { bare:true }) }
+      ], data.transfers, { empty:'No transfers.' }),
+      el('h3', { text:'Fund movements' }),
+      table([
+        { label:'Date', fmt: m => fdate(m.movement_date) },
+        { label:'Fund', primary:true, fmt: m => fundName(m.fund_id) },
+        { label:'Movement', fmt: m => moveLabel[m.direction] || m.direction },
+        { label:'Money moved', fmt: m => m.is_cash_movement ? 'Yes' : 'Decision only' },
+        { label:'Purpose', fmt: m => m.purpose || m.notes || '' },
+        { label:'Amount', cls:'num', fmt: m => money(m.amount, { bare:true }) }
+      ], data.moves, { empty:'No fund movements.' }))));
+
+  out.append(detail('D. Service charge flat by flat', 'what each flat was billed for the period and what it has paid of it',
+    table([
+      { label:'Flat', primary:true, key:'flat_number' },
+      { label:'Month', fmt: c => monthName(c.period_year, c.period_month) },
+      { label:'Billed', cls:'num', fmt: c => money(c.net_payable, { bare:true }) },
+      { label:'Paid', cls:'num', fmt: c => money(c.paid_amount, { bare:true }) },
+      { label:'Still due', cls:'num', fmt: c => money(c.due_amount, { bare:true }) },
+      { label:'Status', fmt: c => c.status }
+    ], data.flatCharges, { empty:'Nothing was billed for this period.',
+      foot: data.flatCharges.length ? [{ value:'Total' }, { value:'' }, { cls:'num', value: money(sc.billed || 0, { bare:true }) },
+        { cls:'num', value: money(sc.paid_against_billed || 0, { bare:true }) },
+        { cls:'num', value: money(Number(sc.billed || 0) - Number(sc.paid_against_billed || 0), { bare:true }) }, { value:'' }] : null })));
+
+  out.append(el('p', { class:'small muted report-end', text:
+    `End of report · ${s.building_name || ''} · ${r.label} · produced ${fdate(todayISO())}` }));
+  return out;
+}
+
+function reportButtons(r, data){
+  if (!can('reports','export') && !can('reports','view')) return [];
+  const t = totals(data);
+  const s = settings();
+  const btns = [];
+  btns.push(el('button', { class:'btn primary', type:'button', onclick: () => {
+    logEvent('REPORT_VIEW', { module:'reports', detail:`monthly report ${r.file} (printed)` });
+    window.print();
+  }}, 'Print / PDF'));
+  if (!can('reports','export')) return btns;
+  btns.push(el('button', { class:'btn', type:'button', onclick: () => {
+    const flat = (rows) => rows.map(x => ({ ...x, amount: Number(x.amount) }));
+    downloadXLSX(`financial-report-${r.file}.xlsx`, [
+      { name:'Summary', title: s.building_name || 'Building', subtitle:`Financial report — ${r.label} (${r.from} to ${r.to})`,
+        columns:[{ label:'Figure', key:'k', width:38 }, { label:'Amount', key:'v', money:true }],
+        rows:[
+          { k:'Total income', v: t.inc }, { k:'Total expense', v: t.exp },
+          { k: t.inc - t.exp >= 0 ? 'Surplus' : 'Deficit', v: Math.abs(t.inc - t.exp) },
+          { k:'Cash & bank at the start', v: t.open }, { k:'Cash & bank at the end', v: t.close },
+          { k:'Funds (earmarked) at the end', v: t.fClose }, { k:'Fixed deposits at the end', v: t.fdClose },
+          { k:'Service charge billed', v: Number(data.sc.billed || 0) },
+          { k:'Service charge paid of that', v: Number(data.sc.paid_against_billed || 0) },
+          { k:'Service charge received in period', v: Number(data.sc.received_in_period || 0) },
+          { k:'Outstanding today', v: Number(data.sc.outstanding_now || 0) }
+        ] },
+      { name:'Income by department', columns:[{ label:'Department', key:'department_name', width:28 },
+          { label:'Category', key:'category_name', width:36 }, { label:'Entries', key:'entries' }, { label:'Amount', key:'amount', money:true }],
+        rows: flat(t.income), total:{ amount: t.inc } },
+      { name:'Expense by department', columns:[{ label:'Department', key:'department_name', width:28 },
+          { label:'Category', key:'category_name', width:36 }, { label:'Entries', key:'entries' }, { label:'Amount', key:'amount', money:true }],
+        rows: flat(t.expense), total:{ amount: t.exp } },
+      { name:'Cash and bank', columns:[{ label:'Account', key:'name', width:28 }, { label:'Opening', key:'opening', money:true },
+          { label:'Money in', key:'money_in', money:true }, { label:'Money out', key:'money_out', money:true }, { label:'Closing', key:'closing', money:true }],
+        rows: t.money_, total:{ opening: t.open, money_in: t.mIn, money_out: t.mOut, closing: t.close } },
+      { name:'Funds', columns:[{ label:'Fund', key:'name', width:30 }, { label:'Purpose', key:'purpose', width:30 },
+          { label:'Opening', key:'opening', money:true }, { label:'Added', key:'added', money:true }, { label:'Used', key:'used', money:true },
+          { label:'Closing', key:'closing', money:true }, { label:'Target', key:'target_amount', money:true }],
+        rows: data.funds, total:{ opening: t.fOpen, added: t.fAdd, used: t.fUsed, closing: t.fClose } },
+      { name:'Income entries', columns: entrySheetCols(), rows: data.entries.filter(e => e.direction === 'INCOME'), total:{ amount: t.inc } },
+      { name:'Expense entries', columns: entrySheetCols(true), rows: data.entries.filter(e => e.direction === 'EXPENSE'), total:{ amount: t.exp } },
+      { name:'Transfers', columns:[{ label:'Date', key:'txn_date', width:12 }, { label:'Number', key:'txn_no', width:16 },
+          { label:'Description', key:'description', width:40 }, { label:'From', key:'account_name', width:22 },
+          { label:'To', key:'counter_account_name', width:22 }, { label:'Amount', key:'amount', money:true }], rows: data.transfers },
+      { name:'Service charge by flat', columns:[{ label:'Flat', key:'flat_number' }, { label:'Year', key:'period_year' },
+          { label:'Month', key:'period_month' }, { label:'Billed', key:'net_payable', money:true }, { label:'Paid', key:'paid_amount', money:true },
+          { label:'Due', key:'due_amount', money:true }, { label:'Status', key:'status' }], rows: data.flatCharges,
+        total:{ net_payable: Number(data.sc.billed || 0), paid_amount: Number(data.sc.paid_against_billed || 0),
+                due_amount: Number(data.sc.billed || 0) - Number(data.sc.paid_against_billed || 0) } }
+    ]);
+    logEvent('EXPORT', { module:'reports', detail:`monthly report ${r.file} (xlsx)` });
+  }}, 'Export Excel'));
+  return btns;
+}
+
+const entrySheetCols = (expense) => [
+  { label:'Date', key:'txn_date', width:12 }, { label:'Number', key:'txn_no', width:16 },
+  { label:'Description', key:'description', width:40 }, { label:'Department', key:'department_name', width:22 },
+  { label:'Category', key:'category_name', width:26 },
+  expense ? { label:'Paid to', key:'vendor_name', width:22 } : { label:'Flat', key:'flat_number', width:10 },
+  { label:'Method', key:'payment_method', width:14 }, { label:'Account', key:'account_name', width:20 },
+  ...(expense ? [{ label:'Approved by', key:'approved_by_name', width:20 }] : []),
+  { label:'Amount', key:'amount', money:true }
+];
