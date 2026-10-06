@@ -28,7 +28,7 @@ const ROUTES = [
   '#/settings', '#/flats/owners', '#/charges/outstanding', '@flat',
   '#/charges/payments', '#/reports/entries', '#/reports/annual', '#/reports/backup',
   '#/community', '#/community/rules', '@doc',
-  '#/charges/owners', '@owner', '#/charges/bills',
+  '#/charges/owners', '@owner', '#/charges/bills', '#/flats/setup',
 ];
 
 async function signIn(page, email){

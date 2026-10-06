@@ -24,6 +24,7 @@ import { groupReceiptDialog } from '../core/receipts.js';
 import { ownerReminderDialog, amountText, monthLabel, dateText, fillTemplate } from '../core/reminder.js';
 import { wireWhatsAppLink } from '../core/whatsapp.js';
 import { receiptImage, receiptPdf, shareFile } from '../core/receipt.js';
+import { duplicatesCard } from '../core/people.js';
 
 const needsUpdate = (what) => el('div', { class:'alert normal' }, el('div', { class:'a-body' },
   el('div', { class:'a-title', text:`${what} needs a database update` }),
@@ -42,7 +43,10 @@ export async function ownersView(){
   page.append(el('div', { class:'page-head' }, el('h1', { text:'Owners & payers' }),
     el('p', { class:'sub', text:'Everyone who owns a flat or pays for one. Owners with several flats — the land owners — come first, with their flats and dues added together.' })));
   page.append(el('div', { class:'toolbar' }, el('a', { class:'btn', href:'#/charges', text:'← Service charge' }),
-    el('a', { class:'btn', href:'#/charges/bills', text:'Monthly bills' })));
+    el('a', { class:'btn', href:'#/charges/bills', text:'Monthly bills' }),
+    el('a', { class:'btn', href:'#/flats/setup', text:'Who owns & who pays' })));
+  const dup = await duplicatesCard({ onDone: () => refresh() });
+  if (dup) page.append(dup);
   const res = await call('owner_accounts', {});
   if (res.missing){ page.append(needsUpdate('Owners & payers')); return page; }
   if (res.error){ page.append(emptyState(res.error)); return page; }
@@ -159,14 +163,18 @@ export async function groupPaymentDialog(ownerId){
   const [fr, accounts] = await Promise.all([call('owner_flats', { p_owner: ownerId }), ref('accounts')]);
   if (fr.missing) return err('Combined payments need a database update: run sql/PATCH.sql in Supabase.');
   if (fr.error) return err(fr.error);
-  const flats = (fr.rows || []).filter(f => f.pays && (f.flat_status === 'ACTIVE' || Number(f.outstanding) > 0));
-  if (!flats.length) return err('This person does not pay for any flat.');
+  // Every flat this person pays for, then the flats they own that a
+  // tenant pays for — unticked, for the month the owner hands it over.
+  const live = (f) => f.flat_status === 'ACTIVE' || Number(f.outstanding) > 0;
+  const all = fr.rows || [];
+  const flats = [...all.filter(f => f.pays && live(f)), ...all.filter(f => !f.pays && f.is_owner && live(f))];
+  if (!flats.length) return err('This person has no flat to pay for.');
   const ownerName = flats[0].owner_name;
 
   const lines = flats.map(f => {
     const owes = Number(f.outstanding);
-    const inc = el('input', { type:'checkbox' }); inc.checked = owes > 0;
-    const amt = el('input', { type:'number', step:'0.01', min:'0', inputmode:'decimal', value: owes > 0 ? owes : '' , 'aria-label':`Amount for ${f.flat_number}` });
+    const inc = el('input', { type:'checkbox' }); inc.checked = f.pays && owes > 0;
+    const amt = el('input', { type:'number', step:'0.01', min:'0', inputmode:'decimal', value: inc.checked ? owes : '' , 'aria-label':`Amount for ${f.flat_number}` });
     amt.disabled = !inc.checked;
     inc.onchange = () => { amt.disabled = !inc.checked; if (inc.checked && !amt.value) amt.value = owes > 0 ? owes : f.current_rate; sum(); };
     amt.oninput = () => sum();
@@ -191,8 +199,9 @@ export async function groupPaymentDialog(ownerId){
     el('p', { class:'muted small', text:`One payment from ${ownerName}, split across the flats they pay for. Each line starts at what that flat owes — change any amount. One receipt lists every flat.` }),
     el('div', { class:'pay-lines' }, lines.map(l => el('label', { class:'pay-line' }, l.inc,
       el('span', { class:'pay-flat' }, el('b', { text:`Flat ${l.f.flat_number}` }),
-        el('span', { class:'small muted', text: Number(l.f.outstanding) > 0 ? `owes ${money(l.f.outstanding)}` : (Number(l.f.advance) > 0 ? `${money(l.f.advance)} in advance` : 'up to date') +
-          (l.f.rate_source === 'TEMPORARY' ? ` · temporary rate ${money(l.f.current_rate)}` : '') })),
+        el('span', { class:'small muted', text: (Number(l.f.outstanding) > 0 ? `owes ${money(l.f.outstanding)}` : (Number(l.f.advance) > 0 ? `${money(l.f.advance)} in advance` : 'up to date')) +
+          (l.f.rate_source === 'TEMPORARY' ? ` · temporary rate ${money(l.f.current_rate)}` : '') }),
+        !l.f.pays ? el('span', { class:'small tenant-note', text:`${l.f.payer_name || 'The tenant'} (tenant) normally pays — tick only if ${ownerName} is paying it this time` }) : null),
       l.amt))),
     el('p', { class:'pay-total' }, 'Total received: ', totalEl),
     el('div', { class:'grid g-form' }, field('Date', dateI, { required:true }), field('Method', methI)),

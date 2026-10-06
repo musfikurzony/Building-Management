@@ -1946,7 +1946,8 @@ const run = async () => {
     await page.waitForTimeout(700);
     await clickText('main button', 'Record a payment for all flats');
     await page.waitForSelector('.modal .pay-line', { timeout: 5000 });
-    const pre = await page.evaluate(() => [...document.querySelectorAll('.modal .pay-line input[type=number]')].map(i => i.value));
+    const pre = await page.evaluate(() => [...document.querySelectorAll('.modal .pay-line')]
+      .filter(l => l.querySelector('input[type=checkbox]').checked).map(l => l.querySelector('input[type=number]').value));
     check('the payment is pre-filled with what each flat owes', pre.length === 2 && pre.includes('5000') && pre.includes('2000'), pre.join(','));
     const i701 = page.locator('.modal .pay-line', { hasText: 'L-701' }).locator('input[type=number]');
     await i701.fill('6000');
@@ -1987,6 +1988,92 @@ const run = async () => {
     await rp.waitForTimeout(1200);
     check('a resident cannot see other owners’ accounts', !/Haji Land/.test(await rp.textContent('body')));
     await rctx.close();
+  });
+
+  /* ---------------- PUTTING OWNERS RIGHT ----------------
+     Reported: Nurul Huda lives in A9 and owns B9, which he rents out.
+     The flats were entered one at a time: he was typed in twice, and
+     B9's tenant was added to A9. His flats did not add up to Tk 10,000. */
+  await section('who owns & who pays: merge, wrong entry, several flats one owner', async () => {
+    await signIn(page, 'admin@test');
+    const ids = await page.evaluate(async () => {
+      const db = await import('/core/db.js');
+      const mk = (n) => db.insert('flats', { flat_number: n, floor: 9, service_charge: 5000 });
+      const a = await mk('N-901'), b = await mk('N-902'), c = await mk('N-903');
+      const o = await db.rpc('set_flat_owner', { p_flat: a.id, p_name: 'Nurul Huda', p_mobile: '01713049096' });
+      await db.rpc('set_flat_tenant', { p_flat: a.id, p_name: 'Tenant N902', p_billed: false });
+      await db.rpc('set_flat_owner', { p_flat: b.id, p_name: 'Nurul Huda', p_mobile: '01713-049096' });
+      const d = new Date();
+      await db.rpc('generate_monthly_charges', { p_year: d.getFullYear(), p_month: d.getMonth() + 1 });
+      return { a: a.id, b: b.id, c: c.id, nurul: (Array.isArray(o) ? o[0] : o).owner_id };
+    });
+
+    await gotoHash(page, '#/flats');
+    check('the flats list has a "Who owns & who pays" button', await page.locator('main a:has-text("Who owns & who pays")').count() === 1);
+    await gotoHash(page, '#/flats/setup');
+    await page.waitForTimeout(600);
+    const dupCard = page.locator('main .dup-card');
+    check('the setup screen spots Nurul Huda entered twice', await dupCard.count() === 1 && /Nurul Huda/.test(await dupCard.innerText()) &&
+          /N-901/.test(await dupCard.innerText()) && /N-902/.test(await dupCard.innerText()));
+    await dupCard.locator('.dup-row', { hasText: 'N-902' }).first().locator('button:has-text("Merge")').click();
+    await page.waitForSelector('.modal input[name=keep]');
+    await page.locator('.modal button:has-text("Merge")').click();
+    await page.waitForTimeout(1500);
+    const acct = await page.evaluate(async (id) => (await (await import('/core/db.js')).rpc('owner_accounts', {})).find(r => r.owner_id === id), ids.nurul);
+    check('after merging he owns both flats', acct?.flats_owned === 2, JSON.stringify(acct || {}).slice(0, 120));
+    check('and owes Tk 10,000 across them', Number(acct?.outstanding) === 10000, acct?.outstanding);
+    check('the double is no longer offered', await page.locator('main .dup-row', { hasText: 'Nurul Huda' }).count() === 0,
+          await page.locator('main .dup-card').innerText().catch(() => 'no card'));
+
+    // The tenant on the wrong flat.
+    await gotoHash(page, '#/flats/' + ids.a);
+    await page.waitForTimeout(700);
+    await page.evaluate(() => {
+      const row = [...document.querySelectorAll('main .person')].find(r => /Tenant/i.test(r.querySelector('.person-role')?.textContent || ''));
+      [...row.querySelectorAll('button')].find(b => b.textContent.trim() === 'Wrong entry?').click();
+    });
+    await page.waitForSelector('.modal input[name=how]');
+    await page.locator('.modal input[type=text]').last().fill('He rents N-902, not N-901');
+    await page.locator('.modal button:has-text("Save")').click();
+    await page.waitForTimeout(1500);
+    const fp = await page.textContent('main');
+    check('a tenant added to the wrong flat can be taken off', !/Tenant N902/.test(fp) && /None — the flat is not let/.test(fp), fp.slice(0, 200).replace(/\s+/g, ' '));
+    check('the flat page shows the owner’s two flats and his total', /Nurul Huda owns 2 flats/.test(fp) && /owes Tk 10,000/.test(fp));
+    check('with "One payment for all flats" right there', await page.locator('main .owner-sum button:has-text("One payment for all flats")').count() === 1);
+
+    // One owner for several ticked flats, and who pays per flat.
+    await gotoHash(page, '#/flats/setup');
+    await page.waitForTimeout(700);
+    const rowOf = (n) => page.locator('main tbody tr', { hasText: n });
+    await rowOf('N-903').locator('input[type=checkbox]').check();
+    await page.locator('main .bulk-owner select').selectOption({ value: ids.nurul });
+    await page.locator('main .bulk-owner button:has-text("Make owner of ticked flats")').click();
+    await page.waitForTimeout(1500);
+    const own903 = await page.evaluate(async (id) => (await (await import('/core/db.js')).q('v_flat_people', b => b.eq('flat_id', id)))[0]?.owner_name, ids.c);
+    check('ticked flats are given to one owner in one go', own903 === 'Nurul Huda', own903);
+    const sel = await rowOf('N-903').locator('select').inputValue();
+    check('and the row shows him as the owner', sel === ids.nurul);
+
+    await page.evaluate(async (id) => (await import('/core/db.js')).rpc('set_flat_tenant', { p_flat: id, p_name: 'Real Tenant 902', p_billed: true }), ids.b);
+    await page.evaluate(() => { location.hash = '#/flats'; }); await page.waitForTimeout(300);
+    await gotoHash(page, '#/flats/setup');
+    await page.waitForTimeout(700);
+    check('a rented flat shows Owner / Tenant to choose who pays', await rowOf('N-902').locator('.seg-btn').count() === 2);
+    check('the tenant is paying N-902', /on/.test(await rowOf('N-902').locator('.seg-btn:has-text("Tenant")').getAttribute('class')));
+
+    // Combined payment: the tenant-paid flat is offered, unticked.
+    await gotoHash(page, '#/charges/owner/' + ids.nurul);
+    await page.waitForTimeout(700);
+    await clickText('main button', 'Record a payment for all flats');
+    await page.waitForSelector('.modal .pay-line', { timeout: 5000 });
+    const line902 = page.locator('.modal .pay-line', { hasText: 'N-902' });
+    check('the combined payment also offers the flat his tenant pays for', await line902.count() === 1 && /normally pays/.test(await line902.innerText()));
+    check('unticked, so it is only included on purpose', !(await line902.locator('input[type=checkbox]').isChecked()));
+    await line902.locator('input[type=checkbox]').check();
+    const total = await page.textContent('.modal .pay-total');
+    check('ticking it adds it to the total', /15,000/.test(total), total);
+    await page.locator('.modal button:has-text("Cancel")').click();
+
   });
 
   /* ---------------- SYSTEM RESET ----------------

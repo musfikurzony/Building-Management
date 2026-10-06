@@ -248,6 +248,18 @@ const run = async () => {
   check('no raw database error on the 089 screens',
         !t12.some(x => /toast err/.test(x.kind) && /does not exist|schema cache|PGRST/i.test(x.text)), JSON.stringify(t12).slice(0, 200));
 
+  /* ---- 091: who owns & who pays ---- */
+  await page.evaluate(() => { document.querySelector('#toasts')?.replaceChildren(); location.hash = '#/flats/setup'; });
+  await page.waitForTimeout(1500);
+  const su = await page.textContent('main');
+  check('"Who owns & who pays" asks for the update instead of failing', /needs a database update/.test(su) && /PATCH\.sql/.test(su), su.slice(0, 100).replace(/\s+/g,' '));
+  await page.evaluate(() => { location.hash = '#/flats/owners'; });
+  await page.waitForTimeout(1500);
+  check('the people list still opens without 091', /Owners & tenants/.test(await page.textContent('main')));
+  const t13 = await toasts(page);
+  check('no raw database error on the 091 screens',
+        !t13.some(x => /toast err/.test(x.kind) && /does not exist|schema cache|PGRST/i.test(x.text)), JSON.stringify(t13).slice(0, 200));
+
   await browser.close();
   const failed = results.filter(r => !r.pass);
   console.log(`\n${results.length - failed.length} of ${results.length} degraded-mode checks passed`);

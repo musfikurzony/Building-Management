@@ -18,9 +18,12 @@ import { can, ref, invalidate, settings } from '../core/store.js';
 import { go, refresh } from '../core/router.js';
 import { reminderDialog, reminderHistory, reminderSummaries } from '../core/reminder.js';
 import { receiptsCard } from '../core/receipts.js';
+import { groupPaymentDialog } from './billing.js';
+import { activePeople, personSelect, newPersonDialog, duplicatesCard, fixDialog } from '../core/people.js';
 
 export async function render({ params }){
   if (params[0] === 'owners') return peopleView();
+  if (params[0] === 'setup')  return setupView();
   if (params[0]){
     if (!/^[0-9a-f-]{36}$/i.test(params[0])) return emptyState('That link does not point to a flat.');
     return flatPage(params[0]);
@@ -67,6 +70,7 @@ async function flatsView(){
   if (can('flats','add')){
     bar.append(el('button', { class:'btn primary', text:'＋ Add flat', onclick: () => flatDialog(null) }));
   }
+  bar.append(el('a', { class:'btn', href:'#/flats/setup', text:'Who owns & who pays' }));
   bar.append(el('a', { class:'btn', href:'#/flats/owners', text:'People' }));
   const search = el('input', { type:'search', placeholder:'Search flat, owner or tenant…' });
   bar.append(el('div', { class:'grow' }, search));
@@ -254,6 +258,7 @@ async function flatPage(flatId){
          rs && rs.since >= 2 ? 'bad' : '')));
 
   page.append(people.missing ? needsUpdate('Managing owners and tenants') : peopleCard(flat, p));
+  if (p.owner_id && can('charges','view')){ const oc = await ownerSummary(p.owner_id); if (oc) page.append(oc); }
   if (can('charges','view')){ const rc = await rateCard(flat); if (rc) page.append(rc); }
 
   if (flat.notes) page.append(el('section', { class:'card' },
@@ -265,7 +270,7 @@ async function flatPage(flatId){
     page.append(await reminderHistory(flatId));
   }
 
-  const past = hist.filter(h => h.to_date);
+  const past = hist.filter(h => h.to_date && !h.voided_at);
   if (past.length){
     const owners = await ref('owners', true);
     const nameOf = (id) => (owners.find(o => o.id === id) || {}).name || '—';
@@ -297,6 +302,27 @@ function personLine(role, name, mobile, email, since, billed){
    ------------------------------------------------------------------ */
 const ym = (d) => d ? String(d).slice(0, 7) : '';
 const ymLabel = (d) => { if (!d) return ''; const [y, m] = String(d).slice(0, 7).split('-').map(Number); return monthName(y, m); };
+
+/** When the owner has more than one flat: his flats and his total, in one line. */
+async function ownerSummary(ownerId){
+  let a;
+  try { a = ((await rpc('owner_accounts', {}, { silent:true })) || []).find(r => r.owner_id === ownerId); }
+  catch { return null; }
+  if (!a || (a.flats_owned < 2 && a.flats_paid < 2)) return null;
+  const box = el('section', { class:'card owner-sum' },
+    el('div', { class:'owner-sum-text' },
+      el('b', { text:`${a.owner_name} owns ${a.flats_owned} flats: ${a.owned_list}` }),
+      el('div', { class:'small muted', text: [
+        a.flats_rented_out ? `${a.flats_rented_out} rented out` : null,
+        `pays for ${a.paid_list || 'none'}`,
+        `${money(a.monthly_total)} a month`,
+        Number(a.outstanding) > 0 ? `owes ${money(a.outstanding)} in all` : 'nothing owed'].filter(Boolean).join(' · ') })),
+    el('div', { class:'btn-row' },
+      el('a', { class:'btn small', href:`#/charges/owner/${ownerId}`, text:'Owner\u2019s account' }),
+      can('charges','add') ? el('button', { class:'btn small primary', type:'button', text:'One payment for all flats',
+        onclick: () => groupPaymentDialog(ownerId) }) : null));
+  return box;
+}
 
 async function rateCard(flat){
   let rows;
@@ -372,7 +398,8 @@ function peopleCard(flat, p){
     if (can('charges','view')) acts.append(el('a', { class:'btn small', href:`#/charges/owner/${p.owner_id}`, text:'All this owner\u2019s flats' }));
     if (edit) acts.append(
       el('button', { class:'btn small', text:'Edit details', onclick: () => personDialog(p.owner_id) }),
-      el('button', { class:'btn small', text:'Change owner', onclick: () => occupantDialog(flat, 'OWNER', p) }));
+      el('button', { class:'btn small', text:'Change owner', onclick: () => occupantDialog(flat, 'OWNER', p) }),
+      el('button', { class:'btn small', text:'Wrong entry?', onclick: async () => { if (await fixDialog(flat, 'OWNER', p)) refresh(); } }));
     if (acts.childNodes.length) row.append(acts);
     card.append(row);
   } else {
@@ -389,7 +416,8 @@ function peopleCard(flat, p){
     const row = personLine('Tenant', p.tenant_name, p.tenant_mobile, p.tenant_email, p.tenant_since, p.tenant_billed);
     if (edit) row.append(el('div', { class:'person-acts' },
       el('button', { class:'btn small', text:'Edit details', onclick: () => personDialog(p.tenant_id) }),
-      el('button', { class:'btn small', text:'Moved out', onclick: () => moveOutDialog(flat, p) })));
+      el('button', { class:'btn small', text:'Moved out', onclick: () => moveOutDialog(flat, p) }),
+      el('button', { class:'btn small', text:'Wrong entry?', onclick: async () => { if (await fixDialog(flat, 'TENANT', p)) refresh(); } })));
     card.append(row);
   } else {
     const row = el('div', { class:'person' },
@@ -451,7 +479,7 @@ function mobileField(value){
 }
 
 async function occupantDialog(flat, relation, p){
-  const people = await ref('owners', true);
+  const people = await activePeople();
   const isTenant = relation === 'TENANT';
   const current = isTenant ? p.tenant_id : p.owner_id;
   const other   = isTenant ? p.owner_id : p.tenant_id;
@@ -483,7 +511,10 @@ async function occupantDialog(flat, relation, p){
         el('span', { class:'small muted', text:' — bills, receipts and reminders go to the tenant. Untick if the owner still pays.' }))) : null,
     !isTenant && current ? el('p', { class:'hint', text:`${p.owner_name} will be kept on record as a past owner. ` +
         (p.owner_billed ? 'The new owner takes over the bill.' : 'The tenant carries on paying.') }) : null,
-    isTenant && p.owner_id ? el('p', { class:'hint', text:`${p.owner_name} stays the owner.` }) : null);
+    isTenant && p.owner_id ? el('p', { class:'hint', text:`${p.owner_name} stays the owner.` }) : null,
+    el('p', { class:'hint', text: isTenant
+      ? `A tenant is the person renting ${flat.flat_number} itself. If ${p.owner_name || 'the owner'} owns another flat as well, do not add it here: open that flat and choose ${p.owner_name || 'the same person'} as its owner.`
+      : 'Already on file for another flat? Choose them from the list instead of typing the name again — then all their flats add up to one account and one receipt.' }));
 
   const res = await modal({
     title: isTenant ? `Add a tenant to ${flat.flat_number}` : (current ? `Change the owner of ${flat.flat_number}` : `Add the owner of ${flat.flat_number}`),
@@ -598,6 +629,7 @@ async function peopleView(){
     ref('owners', true), ref('flats'),
     q('flat_occupancy', b => b.is('to_date', null)).catch(() => [])
   ]);
+  const shown = people.filter(p => p.is_active !== false && !p.merged_into);
   const flatNo = (id) => flats.find(f => f.id === id)?.flat_number || '?';
   const rolesOf = (pid) => occ.filter(o => o.owner_id === pid)
     .map(o => `${flatNo(o.flat_id)} ${o.relation_type === 'TENANT' ? 'tenant' : 'owner'}${o.is_billed ? ' (pays)' : ''}`)
@@ -619,13 +651,180 @@ async function peopleView(){
   bar.append(el('span', { class:'spacer' }));
   if (can('flats','export'))
     bar.append(el('button', { class:'btn small', text:'Export CSV', onclick: () => {
-      downloadCSV('people.csv', cols.slice(0,4), people); logEvent('EXPORT', { module:'flats', detail:'people' });
+      downloadCSV('people.csv', cols.slice(0,4), shown); logEvent('EXPORT', { module:'flats', detail:'people' });
     }}));
 
+  const dup = await duplicatesCard({ onDone: () => refresh() });
   return el('div', {},
+    dup,
     el('div', { class:'page-head' },
       el('h1', { text:'Owners & tenants' }),
       el('p', { class:'sub', text:'Everyone on file. To put someone into a flat as its owner or tenant, open the flat.' })),
     bar,
-    table(cols, people, { empty:'Nobody recorded yet. Open a flat and add its owner.' }));
+    table(cols, shown, { empty:'Nobody recorded yet. Open a flat and add its owner.' }));
+}
+
+/* ==================================================================
+   WHO OWNS & WHO PAYS — every flat on one screen.
+
+   Flats entered one at a time are easy to get wrong in ways that only
+   show later: a land owner typed in again for each of his flats, so his
+   flats never add up; a tenant put on the owner's flat instead of the one
+   he rents. Here each flat's owner is chosen from ONE list of people —
+   choosing the same person for A9 and B9 is what makes them one account,
+   one bill and one combined receipt — and who pays is a tap per flat.
+   ================================================================== */
+async function setupView(){
+  const page = el('div', {});
+  page.append(el('div', { class:'page-head' }, el('h1', { text:'Who owns & who pays' }),
+    el('p', { class:'sub', text:'Every flat on one screen. Choose each flat’s owner from the list — pick the same person for all the flats they own, and those flats add up to one account, one bill and one combined receipt. Then choose who pays each flat.' })));
+  const bar = el('div', { class:'toolbar' }, el('a', { class:'btn', href:'#/flats', text:'← Flats' }));
+  if (can('charges','view')) bar.append(el('a', { class:'btn', href:'#/charges/owners', text:'Owners & payers' }));
+  page.append(bar);
+
+  const [flats, first] = await Promise.all([ref('flats', true), peopleRows()]);
+  if (first.missing){ page.append(needsUpdate('Who owns & who pays')); return page; }
+  const dup = await duplicatesCard({ onDone: () => refresh() });
+  if (dup) page.append(dup);
+
+  const edit = can('flats','edit');
+  const s = settings();
+  let people = await activePeople();
+  let rows = new Map(first.rows.map(r => [r.flat_id, r]));
+  const sorted = [...flats].sort((a, b) => (a.floor - b.floor) || String(a.flat_number).localeCompare(String(b.flat_number), undefined, { numeric:true }));
+  const ticked = new Set();
+
+  const statsHost = el('div', {});
+  const host = el('div', {});
+  const reload = async () => {
+    invalidate('owners');
+    const [p2, r2] = await Promise.all([activePeople(), peopleRows()]);
+    people = p2; rows = new Map(r2.rows.map(r => [r.flat_id, r])); paint();
+  };
+
+  /* Put a person on a flat as its owner — a first owner, a correction or a sale. */
+  const setOwner = async (flat, row, person, { why } = {}) => {
+    const args = person.id ? { p_person: person.id } : { p_name: person.name, p_mobile: person.mobile };
+    if (!row.owner_id) return rpc('set_flat_owner', { p_flat: flat.id, ...args });
+    if (person.id && person.id === row.owner_id) return null;
+    if (why === 'SOLD') return rpc('set_flat_owner', { p_flat: flat.id, ...args, p_from: todayISO() });
+    return rpc('correct_occupant', { p_occupancy: row.owner_occupancy_id, p_person: person.id || null,
+      p_name: person.id ? null : person.name, p_mobile: person.id ? null : person.mobile,
+      p_reason: 'Corrected on Who owns & who pays' });
+  };
+  const askWhy = async (what) => {
+    const r1 = el('input', { type:'radio', name:'why', value:'FIX' }); r1.checked = true;
+    const r2 = el('input', { type:'radio', name:'why', value:'SOLD' });
+    const body = el('div', {}, el('p', { text: what }),
+      el('label', { class:'pick-card' }, r1, el('span', {}, el('b', { text:'Correction — the wrong owner was entered' }),
+        el('div', { class:'small muted', text:'Usual while setting up. The record is put right; no past owner is created.' }))),
+      el('label', { class:'pick-card' }, r2, el('span', {}, el('b', { text:'The flat was sold' }),
+        el('div', { class:'small muted', text:'The old owner is kept as a past owner, from today.' }))));
+    const ok_ = await modal({ title:'Change the owner', body, actions:[{ label:'Cancel', value:null }, { label:'Continue', kind:'primary', value:true }] });
+    return ok_ ? body.querySelector('input[name=why]:checked').value : null;
+  };
+
+  const ownerCell = (f) => {
+    const row = rows.get(f.id) || {};
+    const sel = personSelect(people, { value: row.owner_id || '', none:'— no owner —', exclude: row.tenant_id ? [row.tenant_id] : [] });
+    sel.setAttribute('aria-label', `Owner of ${f.flat_number}`);
+    if (!edit){ sel.disabled = true; return sel; }
+    sel.onclick = (e) => e.stopPropagation();
+    sel.onchange = async () => {
+      const v = sel.value;
+      try {
+        if (v === ''){
+          if (row.owner_id && await fixDialog(f, 'OWNER', row)) await reload(); else paint();
+          return;
+        }
+        let person;
+        if (v === '__new'){ const np = await newPersonDialog(`Owner of ${f.flat_number}`); if (!np){ paint(); return; } person = np; }
+        else person = { id: v };
+        let why;
+        if (row.owner_id){ why = await askWhy(`${f.flat_number} is recorded as owned by ${row.owner_name}.`); if (!why){ paint(); return; } }
+        await setOwner(f, row, person, { why });
+        ok(`Owner of ${f.flat_number} saved.`);
+        await reload();
+      } catch { paint(); }
+    };
+    return sel;
+  };
+  const paysCell = (f) => {
+    const row = rows.get(f.id) || {};
+    if (!row.owner_id && !row.tenant_id) return el('span', { class:'muted', text:'—' });
+    if (!(row.owner_id && row.tenant_id)) return el('span', { text: row.owner_id ? 'Owner' : 'Tenant' });
+    const choose = async (rel, e) => {
+      e.stopPropagation();
+      if (!edit || rel === row.billed_relation) return;
+      try { await rpc('set_billed_party', { p_flat: f.id, p_relation: rel }); ok(`${f.flat_number}: the ${rel === 'TENANT' ? 'tenant' : 'owner'} pays.`); await reload(); } catch {}
+    };
+    return el('div', { class:'seg seg-sm', role:'group', 'aria-label':`Who pays for ${f.flat_number}` },
+      ['OWNER','TENANT'].map(rel => el('button', { type:'button', class:'seg-btn' + (row.billed_relation === rel ? ' on' : ''),
+        'aria-pressed': String(row.billed_relation === rel), disabled: !edit, text: rel === 'OWNER' ? 'Owner' : 'Tenant',
+        onclick: (e) => choose(rel, e) })));
+  };
+  const cols = [
+    ...(edit ? [{ label:'', fmt: f => { const c = el('input', { type:'checkbox', 'aria-label':`Tick ${f.flat_number}` });
+        c.checked = ticked.has(f.id); c.onclick = (e) => e.stopPropagation();
+        c.onchange = () => { c.checked ? ticked.add(f.id) : ticked.delete(f.id); paintBulk(); }; return c; } }] : []),
+    { label:'Flat', primary:true, fmt: f => el('a', { href:`#/flats/${f.id}`, text: f.flat_number }) },
+    { label:'Owner', fmt: ownerCell },
+    { label:'Tenant', fmt: f => { const r = rows.get(f.id) || {};
+        return el('a', { href:`#/flats/${f.id}`, class: r.tenant_name ? '' : 'muted', text: r.tenant_name || (edit ? '＋ add on flat page' : '—') }); } },
+    { label:'Paid by', fmt: paysCell },
+    { label:'Monthly', cls:'num', fmt: f => money(f.service_charge ?? s.default_service_charge, { bare:true }) }
+  ];
+
+  /* Tick several flats, give them one owner — a land owner's flats in one go. */
+  const bulkSel = personSelect(people, { value:'' , none:'Choose the owner…' });
+  const bulkBtn = el('button', { class:'btn primary', type:'button', text:'Make owner of ticked flats' });
+  const bulkInfo = el('span', { class:'small muted' });
+  const bulk = el('div', { class:'card bulk-owner' },
+    el('b', { text:'Several flats, one owner' }),
+    el('p', { class:'small muted', text:'Tick the flats a land owner owns, choose him once, and press the button.' }),
+    el('div', { class:'toolbar' }, el('div', { class:'grow' }, bulkSel), bulkBtn, bulkInfo));
+  const paintBulk = () => { bulkInfo.textContent = ticked.size ? `${ticked.size} ticked` : 'none ticked'; bulkBtn.disabled = !ticked.size; };
+  bulkBtn.onclick = async () => {
+    if (!bulkSel.value) return err('Choose the owner first.');
+    let person;
+    if (bulkSel.value === '__new'){ const np = await newPersonDialog('The owner of the ticked flats'); if (!np) return; person = np; }
+    else person = { id: bulkSel.value };
+    const list = sorted.filter(f => ticked.has(f.id));
+    const changing = list.filter(f => { const r = rows.get(f.id) || {}; return r.owner_id && r.owner_id !== person.id; });
+    let why = 'FIX';
+    if (changing.length){ why = await askWhy(`${changing.map(f => f.flat_number).join(', ')} already ${changing.length === 1 ? 'has an owner' : 'have owners'}.`); if (!why) return; }
+    bulkBtn.disabled = true;
+    let done = 0;
+    for (const f of list){
+      try {
+        const res = await setOwner(f, rows.get(f.id) || {}, person, { why });
+        // A new person is created once; the rest of the flats reuse them.
+        if (!person.id && res){ const occ = Array.isArray(res) ? res[0] : res; if (occ?.owner_id) person = { id: occ.owner_id }; }
+        done++;
+      } catch { break; }
+    }
+    ticked.clear();
+    ok(`${done} flat${done === 1 ? '' : 's'} given to the owner.`);
+    await reload();
+  };
+
+  const paint = () => {
+    const all = [...rows.values()];
+    const counts = new Map();
+    for (const r of all) if (r.owner_id) counts.set(r.owner_id, (counts.get(r.owner_id) || 0) + 1);
+    statsHost.replaceChildren(el('div', { class:'grid g-stats' },
+      stat('Flats', num(flats.length)),
+      stat('Without an owner', num(flats.filter(f => !(rows.get(f.id) || {}).owner_id).length), null,
+           flats.some(f => !(rows.get(f.id) || {}).owner_id) ? 'bad' : 'good'),
+      stat('Owners with several flats', num([...counts.values()].filter(n => n > 1).length)),
+      stat('Paid by tenants', num(all.filter(r => r.billed_relation === 'TENANT').length))));
+    host.replaceChildren(table(cols, sorted, { empty:'No flats yet.' }));
+    paintBulk();
+  };
+  page.append(statsHost);
+  if (edit) page.append(bulk);
+  page.append(host,
+    el('p', { class:'hint', text:'A tenant is added on the flat he rents (tap the flat). "Paid by" decides whose bill, receipt and reminder the flat goes on; a combined receipt can still include a tenant-paid flat if the owner hands over the money.' }));
+  paint();
+  return page;
 }
