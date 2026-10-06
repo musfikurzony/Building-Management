@@ -11,11 +11,15 @@ import { can, ref, state, settings, invalidate } from '../core/store.js';
 import { go, refresh } from '../core/router.js';
 import { reminderDialog, reminderSummaries, reminderCell, remindButton, reminderHistory } from '../core/reminder.js';
 import { receiptDialog, receiptsCard } from '../core/receipts.js';
+import { ownersView, ownerPage, billsView } from './billing.js';
 
 const now = new Date();
 
-export async function render({ params }){
+export async function render({ params, query }){
   const sub = params[0];
+  if (sub === 'owners')      return ownersView();
+  if (sub === 'owner')       return ownerPage(params[1]);
+  if (sub === 'bills')       return billsView(query);
   if (sub === 'outstanding') return outstanding();
   if (sub === 'payments')    return paymentList();
   if (sub === 'adjustments') return adjustmentList();
@@ -38,6 +42,8 @@ async function monthsView(){
     pay.onclick = () => paymentDialog();
     actions.append(pay, gen);
   }
+  actions.append(el('a', { class:'btn', href:'#/charges/bills', text:'Monthly bills' }));
+  actions.append(el('a', { class:'btn', href:'#/charges/owners', text:'Owners & payers' }));
   actions.append(el('a', { class:'btn', href:'#/charges/outstanding', text:'Outstanding' }));
   actions.append(el('a', { class:'btn', href:'#/charges/payments',    text:'Payments & receipts' }));
   if (can('charges','waive')) actions.append(el('a', { class:'btn', href:'#/charges/adjustments', text:'Waivers' }));
@@ -123,6 +129,7 @@ async function generateDialog(){
       `${active.length} active flat${active.length === 1 ? '' : 's'} will be billed, each at its own rate. Flats with no rate of their own use the building default of ${money(s.default_service_charge)}.` }),
     el('div', { class:'grid g-form' }, field('Year', y), field('Month', m)),
     el('p', {}, 'Expected total: ', el('b', { class:'num', text: money(preview) })),
+    el('p', { class:'hint', text:'A flat on a temporary rate (for example still under construction) is billed at that rate for the months it covers.' }),
     el('p', { class:'hint', text:'Safe to run again later. It bills only the flats that are not billed for that month yet, so adding a flat mid-month and pressing this again picks it up without charging anyone twice.' }));
 
   const res = await modal({ title:'Generate monthly charges', body, actions:[
@@ -137,6 +144,12 @@ async function generateDialog(){
     // person is actually asking about — pressing it a second time after
     // adding a flat should say "1 flat billed", not restate the month.
     ok(row?.notes || `${row?.flat_count ?? active.length} flats billed, ${money(row?.total_amount ?? preview)}.`);
+    // The bills go out right after the month is made — offer the next step.
+    if (await confirmBox('Send the bills?',
+        `${monthName(Number(y.value), Number(m.value))} is billed. Send each payer one bill now — every flat they pay for, any earlier dues, and the total due by the ${s.charge_due_day || 10}th?`,
+        'Open the bills')){
+      go(`#/charges/bills?y=${Number(y.value)}&m=${Number(m.value)}`); return;
+    }
     go('#/charges');
   } catch { /* the error toast already explains it */ }
 }

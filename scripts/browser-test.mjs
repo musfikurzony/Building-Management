@@ -48,6 +48,14 @@ async function flatRow(page, flatNumber){
   }, flatNumber);
 }
 
+/** Generating a month offers to open the bills; the older checks say no. */
+async function dismissBillsOffer(page){
+  const offer = page.locator('.modal:has-text("Send the bills?") button:has-text("Cancel")');
+  await offer.waitFor({ timeout: 6000 }).catch(() => {});
+  if (await offer.count()) await offer.click();
+  await page.waitForTimeout(400);
+}
+
 /** Run a section; a failure inside it is one failed check, not a dead run. */
 async function section(name, fn){
   try { await fn(); }
@@ -117,7 +125,10 @@ const run = async () => {
   await page.locator('button:has-text("Generate a month")').click();
   await page.waitForSelector('.modal');
   await page.locator('.modal button:has-text("Generate")').last().click();
-  await page.waitForTimeout(2500);
+  await page.waitForSelector('.modal:has-text("Send the bills?")', { timeout: 6000 }).catch(() => {});
+  check('after generating, sending the bills is offered', /Send each payer one bill/.test(await page.textContent('.modal').catch(() => '')));
+  await page.locator('.modal button:has-text("Cancel")').click();
+  await page.waitForTimeout(1500);
   const chargesText = await page.textContent('main');
   check('generating a month produces a collection row', /Monthly collection/i.test(chargesText));
 
@@ -476,6 +487,7 @@ const run = async () => {
   await page.locator('button:has-text("Generate a month")').click();
   await page.waitForSelector('.modal');
   await page.locator('.modal button:has-text("Generate")').last().click();
+  await dismissBillsOffer(page);
   await page.waitForTimeout(2500);
   const salaryText = await page.textContent('main');
   check('a salary run lists the staff', /Abdul Karim/.test(salaryText), salaryText.slice(0,200));
@@ -1011,6 +1023,7 @@ const run = async () => {
     await page.locator('button:has-text("Generate a month")').click();
     await page.waitForSelector('.modal');
     await page.locator('.modal button:has-text("Generate")').last().click();
+    await dismissBillsOffer(page);
     await page.waitForTimeout(2500);
 
     const t = await page.evaluate(() =>
@@ -1816,6 +1829,155 @@ const run = async () => {
     await page.waitForTimeout(2200);
     check('a bKash screenshot can be attached to a payment', await page.locator('.modal .attach-card .attach-thumb img').count() === 1);
     await page.locator('.modal button:has-text("Done")').click();
+  });
+
+  /* ---------------- LAND OWNERS WITH SEVERAL FLATS ----------------
+     Requested: an owner with several flats, some rented out, sees one
+     total; one payment covers them all with one receipt listing each
+     flat; a flat under construction pays less for a while; and every
+     payer gets one bill at the start of the month, due by the 10th. */
+  await section('owners with several flats, combined payment and monthly bills', async () => {
+    await signIn(page, 'admin@test');
+    const ym0 = new Date().toISOString().slice(0, 7);
+    const d2 = new Date(); d2.setDate(1); d2.setMonth(d2.getMonth() + 2);
+    const ym2 = `${d2.getFullYear()}-${String(d2.getMonth() + 1).padStart(2, '0')}`;
+    const ids = await page.evaluate(async () => {
+      const db = await import('/core/db.js');
+      const mk = (n, c) => db.insert('flats', { flat_number: n, floor: 7, service_charge: c });
+      const a = await mk('L-701', 5000), b = await mk('L-702', 5000), c = await mk('L-703', 4000);
+      const o = await db.rpc('set_flat_owner', { p_flat: a.id, p_name: 'Haji Land', p_mobile: '01711222333' });
+      const owner = (Array.isArray(o) ? o[0] : o).owner_id;
+      await db.rpc('set_flat_owner', { p_flat: b.id, p_person: owner });
+      await db.rpc('set_flat_owner', { p_flat: c.id, p_person: owner });
+      await db.rpc('set_flat_tenant', { p_flat: b.id, p_name: 'Rent Payer', p_mobile: '01811333444', p_billed: true });
+      await db.rpc('set_flat_tenant', { p_flat: c.id, p_name: 'Rent Free', p_billed: false });
+      return { a: a.id, b: b.id, c: c.id, owner };
+    });
+    check('a land owner with three flats is set up', !!ids.owner, JSON.stringify(ids).slice(0, 80));
+
+    // A temporary rate on the flat still under construction, from the flat page.
+    await gotoHash(page, '#/flats/' + ids.c);
+    await page.waitForTimeout(500);
+    check('the flat page has a Temporary rate card', /Temporary rate/.test(await page.textContent('main')));
+    await clickText('main button', '＋ Set a temporary rate');
+    await page.waitForSelector('.modal');
+    await page.locator('.modal input[type=month]').first().fill(ym0);
+    await page.locator('.modal input[type=month]').nth(1).fill(ym2);
+    await page.locator('.modal input[type=number]').fill('2000');
+    await page.locator('.modal input[type=text]').fill('Under construction');
+    await page.locator('.modal button:has-text("Save")').click();
+    await page.waitForTimeout(1400);
+    const ov = await dbq('flat_rate_overrides', { flat_id: ids.c });
+    check('the temporary rate is saved for the months chosen', ov.length === 1 && Number(ov[0].amount) === 2000 &&
+          ov[0].from_month.slice(0, 7) === ym0 && ov[0].to_month.slice(0, 7) === ym2, JSON.stringify(ov[0] || {}).slice(0, 120));
+    check('and the flat page says so', /instead of/.test(await page.textContent('main')));
+
+    const [Y, M] = ym0.split('-').map(Number);
+    await page.evaluate(async ([y, m]) => (await import('/core/db.js')).rpc('generate_monthly_charges', { p_year: y, p_month: m }), [Y, M]);
+    const fc = await dbq('flat_charges', { flat_id: ids.c });
+    check('generating the month bills it at the temporary rate', fc.length === 1 && Number(fc[0].charge_amount) === 2000, fc[0]?.charge_amount);
+
+    // The owners list.
+    await gotoHash(page, '#/charges');
+    check('Service charge has an "Owners & payers" button', await page.locator('main a:has-text("Owners & payers")').count() === 1);
+    await gotoHash(page, '#/charges/owners');
+    await page.waitForTimeout(400);
+    const row = await page.evaluate(() => {
+      const tr = [...document.querySelectorAll('main tbody tr')].find(r => /Haji Land/.test(r.textContent));
+      return tr ? tr.innerText : '';
+    });
+    check('the land owner is listed with all three flats', /L-701/.test(row) && /L-702/.test(row) && /L-703/.test(row), row.replace(/\s+/g, ' '));
+    check('two of them rented out', /2 rented/.test(row));
+    check('and what he owes for the two he pays for', /7,000/.test(row), row.replace(/\s+/g, ' '));
+
+    // His page.
+    await page.evaluate(() => [...document.querySelectorAll('main tbody tr')].find(r => /Haji Land/.test(r.textContent)).click());
+    await page.waitForTimeout(900);
+    const op = await page.textContent('main');
+    check('tapping him opens his page', /Haji Land/.test(op) && /Combined receipts/.test(op));
+    check('it shows who lives in each flat', /Rent Payer \(tenant\)/.test(op) && /Rent Free \(tenant\)/.test(op));
+    check('and the temporary rate', /temporary/.test(op) && /Under construction/.test(op));
+
+    // One reminder for all his flats.
+    await page.evaluate(() => document.addEventListener('click', e => {
+      const a = e.target.closest && e.target.closest('a[href^="https://wa.me"], a[href^="sms:"]');
+      if (a) e.preventDefault();
+    }, true));
+    await clickText('main button', 'Send one reminder');
+    await page.waitForSelector('.modal .rem-text', { timeout: 5000 });
+    const rmsg = await page.inputValue('.modal .rem-text');
+    check('one reminder names both flats he pays for', /L-701/.test(rmsg) && /L-703/.test(rmsg) && !/L-702/.test(rmsg), rmsg.slice(0, 160));
+    check('with his total', /7,000/.test(rmsg));
+    await page.locator('.modal button:has-text("Close")').click();
+    await page.waitForTimeout(300);
+
+    // The month's bill.
+    await gotoHash(page, `#/charges/bills?y=${Y}&m=${M}`);
+    await page.waitForTimeout(700);
+    const card = page.locator('main .bill-card', { hasText: 'Haji Land' });
+    check('the bills page has one bill for him', await card.count() === 1);
+    check('listing each flat he pays for', /L-701/.test(await card.innerText()) && /L-703/.test(await card.innerText()));
+    await card.locator('button:has-text("Send bill")').click();
+    await page.waitForSelector('.modal .rem-text', { timeout: 5000 });
+    const bill = await page.inputValue('.modal .rem-text');
+    check('the bill has a line per flat', /Flat L-701/.test(bill) && /Flat L-703 .*temporary rate/.test(bill), bill.slice(0, 200));
+    check('the total', /Total payable: Tk 7,000/.test(bill));
+    check('and the due day', /Please pay by \d+ \w+ \d{4}/.test(bill) || /Please pay by/.test(bill));
+    const wa = await page.getAttribute('.modal a.btn[href*="wa.me"]', 'href');
+    check('it goes to his WhatsApp', (wa || '').startsWith('https://wa.me/8801711222333?text='), (wa || '').slice(0, 40));
+    await page.click('.modal a.btn[href*="wa.me"]');
+    await page.waitForTimeout(1500);
+    const notes = await page.evaluate(async () => (await import('/core/db.js')).q('bill_notices', b => b.eq('recipient_name', 'Haji Land')));
+    check('sending records the bill for both flats', notes.length === 2 && notes.every(n => n.channel === 'WHATSAPP'), String(notes.length));
+    const sentCard = await page.locator('main .bill-card', { hasText: 'Haji Land' }).innerText();
+    check('and the bill shows as sent', /^sent \d/im.test(sentCard) && /Send again/.test(sentCard), sentCard.replace(/\s+/g, ' ').slice(-80));
+
+    // One payment for all his flats.
+    await gotoHash(page, '#/charges/owner/' + ids.owner);
+    await page.waitForTimeout(700);
+    await clickText('main button', 'Record a payment for all flats');
+    await page.waitForSelector('.modal .pay-line', { timeout: 5000 });
+    const pre = await page.evaluate(() => [...document.querySelectorAll('.modal .pay-line input[type=number]')].map(i => i.value));
+    check('the payment is pre-filled with what each flat owes', pre.length === 2 && pre.includes('5000') && pre.includes('2000'), pre.join(','));
+    const i701 = page.locator('.modal .pay-line', { hasText: 'L-701' }).locator('input[type=number]');
+    await i701.fill('6000');
+    check('the total follows the edits', /7,9|8,000/.test(await page.textContent('.modal .pay-total')), await page.textContent('.modal .pay-total'));
+    await page.evaluate(() => { const s = [...document.querySelectorAll('.modal select')].find(x => [...x.options].some(o => o.value && o.value.length > 30));
+      if (s && !s.value) { s.value = [...s.options].find(o => o.value).value; } });
+    await page.locator('.modal button:has-text("Record payment")').click();
+    await page.waitForSelector('.modal .data, .modal table', { timeout: 8000 });
+    await page.waitForTimeout(600);
+    const rt = await page.textContent('.modal');
+    check('one combined receipt opens', /RCT-G-\d{4}-\d{4}/.test(rt), rt.slice(0, 80));
+    check('listing each flat', /L-701/.test(rt) && /L-703/.test(rt));
+    const groups = await dbq('payment_groups', { payer_owner_id: ids.owner });
+    check('one payment group of Tk 8,000', groups.length === 1 && Number(groups[0].total_amount) === 8000, groups[0]?.total_amount);
+    const pays = await dbq('payments', { group_id: groups[0]?.id });
+    check('made of one payment per flat', pays.length === 2);
+    const l701 = await flatRow(page, 'L-701');
+    check('the extra Tk 1,000 is kept as L-701’s advance', l701?.advance === 1000 && l701?.outstanding === 0, JSON.stringify(l701));
+    const [img] = await Promise.all([page.waitForEvent('download', { timeout: 15000 }),
+                                     page.click('.modal button:has-text("Send as image")')]);
+    const ib = fs.readFileSync(await img.path());
+    check('the combined receipt can be sent as an image', ib[0] === 0x89 && ib[1] === 0x50, img.suggestedFilename());
+    await page.locator('.modal button:has-text("Done")').click();
+    await page.waitForTimeout(800);
+    check('his page lists the combined receipt', /RCT-G-/.test(await page.textContent('main')));
+
+    // The bill wording in Settings.
+    await gotoHash(page, '#/settings');
+    await page.waitForTimeout(600);
+    const bs = await page.textContent('#bill-settings').catch(() => '');
+    check('Settings has the monthly bill wording, with a preview', /Monthly bill message/.test(bs) && /B-301/.test(bs) && /temporary rate/.test(bs));
+
+    // A resident sees none of it.
+    const rctx = await browser.newContext();
+    const rp = await rctx.newPage();
+    await signIn(rp, 'resident@test');
+    await rp.evaluate(() => { location.hash = '#/charges/owners'; });
+    await rp.waitForTimeout(1200);
+    check('a resident cannot see other owners’ accounts', !/Haji Land/.test(await rp.textContent('body')));
+    await rctx.close();
   });
 
   /* ---------------- SYSTEM RESET ----------------

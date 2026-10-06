@@ -13,7 +13,7 @@ export PGOPTIONS='-c client_min_messages=warning'
 DB=bms_behind
 
 # Which migrations to leave out. Update this when a new one lands.
-SKIP="070_reset.sql 080_roles.sql 085_people_reminders.sql 086_reports_funds.sql 087_community_backup.sql 088_storage_setup.sql"
+SKIP="070_reset.sql 080_roles.sql 085_people_reminders.sql 086_reports_funds.sql 087_community_backup.sql 088_storage_setup.sql 089_owners_bills.sql"
 
 psql -q -d postgres -c "DROP DATABASE IF EXISTS $DB WITH (FORCE);" >/dev/null
 psql -q -d postgres -c "CREATE DATABASE $DB;" >/dev/null

@@ -226,6 +226,28 @@ const run = async () => {
     check('and does not show the raw "Bucket not found"', !t11.some(x => /^Bucket not found$/i.test(x.text.trim())));
   } else check('there is an entry to attach to', false);
 
+  /* ---- 089: owners with several flats, combined payments, monthly bills ---- */
+  for (const [hash, what] of [['#/charges/owners', 'Owners & payers'], ['#/charges/owner/00000000-0000-0000-0000-000000000000', 'The owner page'],
+                              ['#/charges/bills', 'Monthly bills']]){
+    await page.evaluate(h => { document.querySelector('#toasts')?.replaceChildren(); location.hash = h; }, hash);
+    await page.waitForTimeout(1500);
+    const tx = await page.textContent('main');
+    check(`${what} asks for the update without 089`, tx.includes(`${what} needs a database update`) && /PATCH\.sql/.test(tx), tx.slice(0, 100).replace(/\s+/g,' '));
+  }
+  await page.evaluate(() => { location.hash = '#/settings'; });
+  await page.waitForTimeout(1500);
+  check('Settings explains the bill wording needs the update', /Monthly bills need a database update/.test(await page.textContent('#bill-settings').catch(() => '')));
+  const fl = await page.evaluate(async () => (await (await import('/core/db.js')).q('flats', b => b.limit(1)))[0]?.id);
+  await page.evaluate(id => { location.hash = '#/flats/' + id; }, fl);
+  await page.waitForTimeout(1500);
+  check('a flat page still opens without 089 (no temporary-rate card)', /^Flat /m.test(await page.textContent('main')) && !/Temporary rate/.test(await page.textContent('main')));
+  await page.evaluate(() => { location.hash = '#/dashboard'; });
+  await page.waitForTimeout(1800);
+  check('the dashboard still opens without 089', /Dashboard/.test(await page.textContent('main')));
+  const t12 = await toasts(page);
+  check('no raw database error on the 089 screens',
+        !t12.some(x => /toast err/.test(x.kind) && /does not exist|schema cache|PGRST/i.test(x.text)), JSON.stringify(t12).slice(0, 200));
+
   await browser.close();
   const failed = results.filter(r => !r.pass);
   console.log(`\n${results.length - failed.length} of ${results.length} degraded-mode checks passed`);

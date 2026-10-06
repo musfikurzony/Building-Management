@@ -12,7 +12,7 @@
    owner's ownership whenever a tenant was linked. */
 
 import { el, field, select, money, num, fdate, table, emptyState, ok, err, modal,
-         confirmBox, downloadCSV, todayISO, badge, stat } from '../core/ui.js';
+         confirmBox, reasonBox, monthName, downloadCSV, todayISO, badge, stat } from '../core/ui.js';
 import { q, one, insert, update, rpc, logEvent, isMissingObject, friendly } from '../core/db.js';
 import { can, ref, invalidate, settings } from '../core/store.js';
 import { go, refresh } from '../core/router.js';
@@ -254,6 +254,7 @@ async function flatPage(flatId){
          rs && rs.since >= 2 ? 'bad' : '')));
 
   page.append(people.missing ? needsUpdate('Managing owners and tenants') : peopleCard(flat, p));
+  if (can('charges','view')){ const rc = await rateCard(flat); if (rc) page.append(rc); }
 
   if (flat.notes) page.append(el('section', { class:'card' },
     el('div', { class:'card-head' }, el('h2', { text:'Notes' })), el('p', { text: flat.notes })));
@@ -289,6 +290,76 @@ function personLine(role, name, mobile, email, since, billed){
       el('div', { class:'small muted', text: [mobile, email, since ? `since ${fdate(since)}` : null].filter(Boolean).join(' · ') || 'no contact details' })));
 }
 
+/* ------------------------------------------------------------------
+   Temporary rate — a flat still under construction, or let cheaply for
+   a while, pays a different amount for a set run of months and goes
+   back to its normal rate by itself afterwards.
+   ------------------------------------------------------------------ */
+const ym = (d) => d ? String(d).slice(0, 7) : '';
+const ymLabel = (d) => { if (!d) return ''; const [y, m] = String(d).slice(0, 7).split('-').map(Number); return monthName(y, m); };
+
+async function rateCard(flat){
+  let rows;
+  try { rows = await q('flat_rate_overrides', b => b.eq('flat_id', flat.id).order('from_month', { ascending:false }), { silent:true }); }
+  catch (e){ if (isMissingObject(e.original || e)) return null; return null; }
+  const s = settings();
+  const normal = flat.service_charge ?? s.default_service_charge;
+  const thisMonth = todayISO().slice(0, 7);
+  const live = rows.filter(r => !r.cancelled_at);
+  const current = live.find(r => ym(r.from_month) <= thisMonth && (!r.to_month || ym(r.to_month) >= thisMonth));
+
+  const card = el('section', { class:'card' },
+    el('div', { class:'card-head' }, el('h2', { text:'Temporary rate' }),
+      can('charges','edit') ? el('button', { class:'btn small', type:'button', text:'＋ Set a temporary rate', onclick: () => rateDialog(flat) }) : null),
+    el('p', { class: current ? 'rate-now temp' : 'rate-now', text: current
+      ? `This month: ${money(current.amount)} instead of ${money(normal)} — ${current.reason}${current.to_month ? `, until ${ymLabel(current.to_month)}` : ', until cancelled'}.`
+      : `Normal rate: ${money(normal)} a month. Use a temporary rate for a flat under construction, or any time-limited discount; it ends on its own.` }));
+  if (rows.length) card.append(table([
+    { label:'Months', primary:true, fmt: r => `${ymLabel(r.from_month)} – ${r.to_month ? ymLabel(r.to_month) : 'until cancelled'}` },
+    { label:'Rate', cls:'num', fmt: r => money(r.amount, { bare:true }) },
+    { label:'Why', key:'reason' },
+    { label:'', fmt: r => r.cancelled_at ? el('span', { class:'small muted', text:`cancelled — ${r.cancel_reason || ''}` })
+        : (can('charges','edit') ? el('button', { class:'btn small', type:'button', text:'Cancel', onclick: async (e) => {
+            e.stopPropagation();
+            const reason = await reasonBox('Cancel this temporary rate?', 'Why? (months already billed keep their bill)', 'Cancel the rate');
+            if (!reason) return;
+            try { await rpc('cancel_temporary_rate', { p_id: r.id, p_reason: reason }); ok('Temporary rate cancelled.'); refresh(); } catch {}
+          } }) : null) }
+  ], rows, { stack: true }));
+  return card;
+}
+
+async function rateDialog(flat){
+  const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() + 1);
+  const next = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+  const fromI = el('input', { type:'month', value: next, placeholder:'YYYY-MM' });
+  const toI = el('input', { type:'month', placeholder:'YYYY-MM' });
+  const amtI = el('input', { type:'number', step:'0.01', min:'0', inputmode:'decimal', placeholder:'e.g. 2000' });
+  const whyI = el('input', { type:'text', maxlength:'200', placeholder:'e.g. Under construction' });
+  const ok1 = (v) => /^\d{4}-\d{2}$/.test(v);
+  const body = el('div', {},
+    el('p', { class:'muted small', text:`Flat ${flat.flat_number} normally pays ${money(flat.service_charge ?? settings().default_service_charge)}. For the months below it will be billed this amount instead, then go back to normal by itself.` }),
+    el('div', { class:'grid g-form' }, field('From month', fromI, { required:true }), field('Until month', toI, { hint:'Leave empty to keep it until you cancel it.' })),
+    el('div', { class:'grid g-form' }, field('Monthly amount', amtI, { required:true }), field('Why', whyI, { required:true })),
+    el('p', { class:'hint', text:'Months already billed are not changed — use a waiver for those. The rate shows on bills as a temporary rate.' }));
+  const res = await modal({ title:`Temporary rate — Flat ${flat.flat_number}`, body, actions:[
+    { label:'Cancel', value:null },
+    { label:'Save', kind:'primary', value:true, validate: () => {
+        if (!ok1(fromI.value)){ err('Choose the first month (YYYY-MM).'); return false; }
+        if (toI.value && !ok1(toI.value)){ err('The last month should look like 2027-03.'); return false; }
+        if (toI.value && toI.value < fromI.value){ err('The last month is before the first.'); return false; }
+        if (amtI.value === '' || Number(amtI.value) < 0){ err('Enter the monthly amount.'); return false; }
+        if (whyI.value.trim().length < 2){ err('Say why — for example, under construction.'); return false; }
+        return true; } }
+  ]});
+  if (!res) return;
+  try {
+    await rpc('set_temporary_rate', { p_flat: flat.id, p_from: fromI.value + '-01', p_to: toI.value ? toI.value + '-01' : null,
+                                      p_amount: Number(amtI.value), p_reason: whyI.value.trim() });
+    ok('Temporary rate saved.'); refresh();
+  } catch {}
+}
+
 function peopleCard(flat, p){
   const edit = can('flats','edit');
   const card = el('section', { class:'card' },
@@ -297,9 +368,12 @@ function peopleCard(flat, p){
   // Owner
   if (p.owner_id){
     const row = personLine('Owner', p.owner_name, p.owner_mobile, p.owner_email, p.owner_since, p.owner_billed);
-    if (edit) row.append(el('div', { class:'person-acts' },
+    const acts = el('div', { class:'person-acts' });
+    if (can('charges','view')) acts.append(el('a', { class:'btn small', href:`#/charges/owner/${p.owner_id}`, text:'All this owner\u2019s flats' }));
+    if (edit) acts.append(
       el('button', { class:'btn small', text:'Edit details', onclick: () => personDialog(p.owner_id) }),
-      el('button', { class:'btn small', text:'Change owner', onclick: () => occupantDialog(flat, 'OWNER', p) })));
+      el('button', { class:'btn small', text:'Change owner', onclick: () => occupantDialog(flat, 'OWNER', p) }));
+    if (acts.childNodes.length) row.append(acts);
     card.append(row);
   } else {
     const row = el('div', { class:'person' },

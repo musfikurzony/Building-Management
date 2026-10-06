@@ -8,6 +8,7 @@ import { q, update, insert, rpc, isMissingFunction, friendly } from '../core/db.
 import { refresh } from '../core/router.js';
 import { can, ref, state, settings, invalidate, reloadSettings } from '../core/store.js';
 import { TONES, TONE_NAME, LANGS, composeMessage } from '../core/reminder.js';
+import { billMessage } from './billing.js';
 
 export async function render(){
   const s = settings();
@@ -109,6 +110,7 @@ export async function render(){
   }
 
   page.append(await remindersCard());
+  page.append(billTemplateCard());
   page.append(await categoriesCard());
   page.append(await periodsCard());
   page.append(await resetCard());
@@ -550,6 +552,79 @@ async function remindersCard(){
       } catch { /* toast */ }
     };
     card.append(el('div', { class:'btn-row' }, saveMsg, restore));
+  }
+  load();
+  return card;
+}
+
+/* ---------------------------------------------------------------------
+   The monthly bill — what goes to each payer at the start of the month.
+   --------------------------------------------------------------------- */
+const BILL_PLACEHOLDERS = [
+  ['{name}', 'the person who pays'],
+  ['{month}', 'the month billed'],
+  ['{lines}', 'one line per flat: this month, temporary rate, earlier dues'],
+  ['{total}', 'everything payable, all flats together'],
+  ['{due_date}', 'the due day of the month (Service charge → due day)'],
+  ['{flats}', 'the flat numbers, e.g. A-101, A-102'],
+  ['{building}', 'building name'],
+  ['{how_to_pay}', 'your payment instructions from the reminder settings']
+];
+
+function billTemplateCard(){
+  const s = settings();
+  const editable = can('settings','edit');
+  const card = el('section', { class:'card', id:'bill-settings' },
+    el('div', { class:'card-head' }, el('h2', { text:'Monthly bill message' })),
+    el('p', { class:'muted small', text:`What Service charge → Monthly bills sends at the start of each month: one message per payer, listing every flat they pay for, with the total due by the ${s.charge_due_day || 10}th.` }));
+  if (!('bill_template_en' in s)){
+    card.append(el('div', { class:'alert normal' }, el('div', { class:'a-body' },
+      el('div', { class:'a-title', text:'Monthly bills need a database update' }),
+      el('div', { class:'a-meta', text:'In Supabase open the SQL Editor and run sql/PATCH.sql — it is safe to run twice — then reload this page.' }))));
+    return card;
+  }
+  const langI = select([{ value:'en', label:'English' }, { value:'bn', label:'Bangla' }], { value: s.reminder_language || 'en' });
+  const body = el('textarea', { rows:12, class:'rem-text', maxlength:'2000' });
+  if (!editable) body.readOnly = true;
+  const preview = el('pre', { class:'rem-sent' });
+  const now_ = new Date(), y = now_.getFullYear(), m = now_.getMonth() + 1;
+  const due = `${y}-${String(m).padStart(2,'0')}-${String(s.charge_due_day || 10).padStart(2,'0')}`;
+  const sample = { name:'Haji Karim', due_date: due, total: 17000, flats: [
+    { flat_number:'A-101', this_month:5000, this_month_due:5000, previous_due:0 },
+    { flat_number:'A-102', this_month:5000, this_month_due:5000, previous_due:5000 },
+    { flat_number:'B-301', this_month:2000, this_month_due:2000, previous_due:0, rate_source:'TEMPORARY' }] };
+  const col = () => langI.value === 'bn' ? 'bill_template_bn' : 'bill_template_en';
+  const paint = () => { preview.textContent = billMessage(sample, y, m, langI.value, body.value); };
+  const load = () => { body.value = s[col()] || ''; paint(); };
+  langI.onchange = load; body.oninput = paint;
+
+  const chips = el('div', { class:'chips' }, BILL_PLACEHOLDERS.map(([tok, what]) => el('button', { type:'button', class:'chip', title: what, text: tok, disabled: !editable,
+    onclick: () => { const a = body.selectionStart ?? body.value.length, b = body.selectionEnd ?? a;
+      body.value = body.value.slice(0, a) + tok + body.value.slice(b); body.focus(); paint(); } })));
+  card.append(field('Language', langI), field('Wording', body), chips,
+    el('details', { class:'ph-help' }, el('summary', { text:'What each one becomes' }),
+      el('ul', {}, BILL_PLACEHOLDERS.map(([tok, what]) => el('li', {}, el('code', { text: tok }), ` — ${what}`)))),
+    el('div', { class:'field' }, el('span', { text:'Preview (a made-up owner with three flats)' }), preview));
+
+  if (editable){
+    const save = el('button', { class:'btn primary', text:'Save bill message' });
+    save.onclick = async () => {
+      const text = body.value.replace(/\r\n/g, '\n');
+      if (!text.trim()) return err('The bill cannot be empty. Use "Restore original" to go back to the wording it came with.');
+      if (!text.includes('{lines}') && !text.includes('{total}') &&
+          !await confirmBox('No amounts in the bill', 'This wording has neither {lines} nor {total}, so the bill will not say what is owed. Save it anyway?', 'Save anyway')) return;
+      save.disabled = true;
+      try { await update('building_settings', true, { [col()]: text }, 'id'); await reloadSettings(); ok('Bill message saved'); refresh(); }
+      catch { save.disabled = false; }
+    };
+    const restore = el('button', { class:'btn', text:'Restore original' });
+    restore.onclick = async () => {
+      if (!await confirmBox('Restore the original wording?', 'Your wording for this language will be replaced with the one it came with.', 'Restore')) return;
+      try { const t = await rpc('default_bill_template', { p_lang: langI.value });
+            await update('building_settings', true, { [col()]: t }, 'id'); await reloadSettings(); ok('Original wording restored'); refresh(); }
+      catch {}
+    };
+    card.append(el('div', { class:'btn-row' }, save, restore));
   }
   load();
   return card;

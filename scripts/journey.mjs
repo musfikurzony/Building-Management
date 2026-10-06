@@ -132,6 +132,9 @@ const run = async () => {
   if (await page.isVisible('.modal')){
     await clickText(page, 'Generate', '.modal');
     await page.waitForTimeout(2200);
+    // Generating offers to open the month's bills; say not now.
+    if (await page.isVisible('.modal')) await clickText(page, 'Cancel', '.modal');
+    await page.waitForTimeout(400);
   }
   const charged = await page.evaluate(async () => {
     const db = await import('/core/db.js');

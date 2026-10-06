@@ -3,8 +3,8 @@
    doing completely different jobs. */
 
 import { el, html, money0, money, num, fdate, stat, emptyState, monthName } from '../core/ui.js';
-import { q, count } from '../core/db.js';
-import { can, state } from '../core/store.js';
+import { q, count, rpc } from '../core/db.js';
+import { can, state, settings } from '../core/store.js';
 
 const now = new Date();
 const Y = now.getFullYear(), M = now.getMonth() + 1;
@@ -43,6 +43,34 @@ async function adminDashboard(){
     }
   }
 
+  // Start of the month: the month billed, and every payer sent a bill
+  // before the due day. Quiet on a database without 089.
+  if (can('charges','add')){
+    const dueDay = Number(settings().charge_due_day || 10);
+    if (new Date().getDate() <= dueDay){
+      const bills = await rpc('month_bills', { p_year: Y, p_month: M }, { silent:true }).catch(() => null);
+      if (bills && bills.length){
+        if (!bills.some(b => b.is_billed))
+          alerts.push({ severity:'HIGH', link:'#/charges', item_count: 1,
+            title:`${monthName(Y, M)} is not billed yet — generate it, then send the bills`,
+            meta:`Service charge is due by the ${dueDay}th` });
+        else {
+          const payers = new Map();
+          for (const b of bills) if (b.payer_id){
+            const p = payers.get(b.payer_id) || { total: 0, sent: true };
+            p.total += Number(b.total_due); p.sent = p.sent && b.times_sent > 0;
+            payers.set(b.payer_id, p);
+          }
+          const unsent = [...payers.values()].filter(p => p.total > 0 && !p.sent);
+          if (unsent.length)
+            alerts.push({ severity:'NORMAL', link:`#/charges/bills?y=${Y}&m=${M}`, item_count: unsent.length,
+              title:`${num(unsent.length)} ${monthName(Y, M)} bill${unsent.length === 1 ? '' : 's'} not sent yet`,
+              meta:`${money0(unsent.reduce((t, p) => t + p.total, 0))} payable by the ${dueDay}th · one tap each` });
+        }
+      }
+    }
+  }
+
   /* ---- alerts ---- */
   if (alerts.length){
     const box = el('section', { class:'card' });
@@ -51,7 +79,7 @@ async function adminDashboard(){
       box.append(el('a', { class:'alert ' + a.severity.toLowerCase(), href: a.link },
         el('div', { class:'a-body' },
           el('div', { class:'a-title', text: a.title }),
-          el('div', { class:'a-meta', text: a.backup ? 'Every record in one Excel file, kept safe offline' :
+          el('div', { class:'a-meta', text: a.meta ? a.meta : a.backup ? 'Every record in one Excel file, kept safe offline' :
             `${num(a.item_count)} item${a.item_count === 1 ? '' : 's'}` +
             (a.amount ? ` · ${money0(a.amount)}` : '') }))
       ));

@@ -28,6 +28,7 @@ const ROUTES = [
   '#/settings', '#/flats/owners', '#/charges/outstanding', '@flat',
   '#/charges/payments', '#/reports/entries', '#/reports/annual', '#/reports/backup',
   '#/community', '#/community/rules', '@doc',
+  '#/charges/owners', '@owner', '#/charges/bills',
 ];
 
 async function signIn(page, email){
@@ -142,10 +143,17 @@ const run = async () => {
       const db = await import('/core/db.js');
       return (await db.q('building_documents', b => b.limit(1)))[0]?.id;
     });
+    const ownerId = await page.evaluate(async () => {
+      const db = await import('/core/db.js');
+      return (await db.q('owners', b => b.eq('name', 'Mohammad Abdur Rahim Chowdhury')))[0]?.id;
+    });
     for (const r of ROUTES){
-      const route = r === '@flat' ? `#/flats/${flatId}` : r === '@doc' ? `#/community/doc/${docId}` : r;
+      const route = r === '@flat' ? `#/flats/${flatId}` : r === '@doc' ? `#/community/doc/${docId}` : r === '@owner' ? `#/charges/owner/${ownerId}` : r;
       await page.evaluate(h => { location.hash = h; }, route);
       await page.waitForTimeout(850);
+      // Measure the screen, not its loading spinner.
+      await page.waitForFunction(() => !document.querySelector('main .spinner'), null, { timeout: 8000 }).catch(() => {});
+      await page.waitForTimeout(150);
 
       const o = await overflow(page, dev.width);
       if (o.over > 0){
@@ -189,6 +197,28 @@ const run = async () => {
     } else {
       problems++;
       console.log(`PROBLEM  Remind dialog did not open`);
+    }
+
+    // The combined payment and the monthly bill, at phone width.
+    for (const [hash, button, sel, label] of [
+      [`#/charges/owner/${ownerId}`, 'Record a payment for all flats', '.modal .pay-line', 'combined payment dialog'],
+      ['#/charges/bills', 'Send bill', '.modal .rem-text', 'bill dialog']]){
+      await page.evaluate(h => { location.hash = h; }, hash);
+      await page.waitForTimeout(1000);
+      await page.evaluate(t => [...document.querySelectorAll('main button')].find(b => b.textContent.trim() === t)?.click(), button);
+      await page.waitForTimeout(1200);
+      if (await page.isVisible(sel)){
+        const o = await overflow(page, dev.width);
+        const bad = await page.evaluate(() => [...document.querySelectorAll('.modal button, .modal a, .modal select, .modal textarea, .modal input')]
+          .filter(el => { const r = el.getBoundingClientRect();
+            const small = el.type === 'checkbox' ? false : r.height < 43.5;
+            return r.width && (small || r.right > innerWidth + 1); })
+          .map(el => `${el.tagName.toLowerCase()} h=${Math.round(el.getBoundingClientRect().height)} "${(el.textContent || el.value || '').trim().slice(0, 20)}"`));
+        if (o.over > 0 || bad.length){ problems++; console.log(`PROBLEM  ${label}: +${o.over}px; ${bad.join(', ')}`); }
+        else console.log(`ok       ${label} fits, every control >= 44px`);
+        await page.keyboard.press('Escape');
+        await page.waitForTimeout(300);
+      } else { problems++; console.log(`PROBLEM  ${label} did not open`); }
     }
 
     // A receipt, opened again from the payments list.
