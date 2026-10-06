@@ -1308,6 +1308,13 @@ const run = async () => {
           /Z-901/.test(dlg.msg) && new RegExp('Tk ' + Number(owed.outstanding).toLocaleString('en-IN')).test(dlg.msg), dlg.msg.slice(0, 160));
     check('the first reminder is the gentle one', /gentle reminder/i.test(dlg.msg));
     check('WhatsApp gets the number in international form', dlg.wa.startsWith('https://wa.me/8801812000111?text='), dlg.wa.slice(0, 50));
+    // Reported: an unlabelled grey button next to "Send on WhatsApp".
+    const blank = await page.evaluate(() => [...document.querySelectorAll('.modal a.btn, .modal button')]
+      .filter(b => !b.hidden && getComputedStyle(b).display !== 'none' && !b.textContent.trim() && !b.getAttribute('aria-label')).length);
+    check('every button in the reminder has a name', blank === 0, `${blank} blank`);
+    const smsBtn = await page.evaluate(() => { const a = [...document.querySelectorAll('.modal a.btn')].find(x => x.textContent.trim() === 'Send as SMS');
+      return a && !a.hidden ? a.getAttribute('href') : null; });
+    check('the SMS button is labelled and texts the same number', (smsBtn || '').startsWith('sms:+8801812000111?&body='), smsBtn);
     check('and the full message', decodeURIComponent(dlg.wa.split('?text=')[1] || '') === dlg.msg);
 
     await page.click('.modal a[href^="https://wa.me"]');
@@ -1923,6 +1930,8 @@ const run = async () => {
     check('the bill has a line per flat', /Flat L-701/.test(bill) && /Flat L-703 .*temporary rate/.test(bill), bill.slice(0, 200));
     check('the total', /Total payable: Tk 7,000/.test(bill));
     check('and the due day', /Please pay by \d+ \w+ \d{4}/.test(bill) || /Please pay by/.test(bill));
+    check('the bill dialog has no unlabelled button', await page.evaluate(() => [...document.querySelectorAll('.modal a.btn, .modal button')]
+      .filter(b => !b.hidden && !b.textContent.trim() && !b.getAttribute('aria-label')).length) === 0);
     const wa = await page.getAttribute('.modal a.btn[href*="wa.me"]', 'href');
     check('it goes to his WhatsApp', (wa || '').startsWith('https://wa.me/8801711222333?text='), (wa || '').slice(0, 40));
     await page.click('.modal a.btn[href*="wa.me"]');

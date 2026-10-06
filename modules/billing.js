@@ -364,7 +364,7 @@ async function billDialog(payer, y, m, { queue = false } = {}){
   const langI = select([{ value:'en', label:'English' }, { value:'bn', label:'বাংলা' }], { value: s.reminder_language || 'en' });
   const text = el('textarea', { rows: 14, maxlength:'3000', class:'rem-text' });
   const wa = el('a', { class:'btn primary' });
-  const sms = el('a', { class:'btn' });
+  const sms = el('a', { class:'btn', text:'Send as SMS' });
   const img = el('button', { class:'btn', type:'button', text:'Bill as picture' });
   const copy = el('button', { class:'btn', type:'button', text:'Copy text' });
   const sync = () => {
