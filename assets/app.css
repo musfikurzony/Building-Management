@@ -648,3 +648,22 @@ label.btn.disabled{opacity:.55;pointer-events:none}
 }
 .bill-lines th{font-size:.75rem;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;padding:.2rem;text-align:left}
 .bill-lines th.num{text-align:right}
+
+/* ---- v7: who owns & who pays, duplicates, fixing wrong entries ---- */
+.dup-card{border-color:var(--amber);background:var(--amber-soft)}
+.dup-row{display:flex;justify-content:space-between;align-items:center;gap:.8rem;padding:.6rem 0;border-top:1px solid var(--line)}
+.dup-who{display:flex;flex-direction:column;gap:.15rem;min-width:0}
+.pick-card{display:flex;gap:.7rem;align-items:flex-start;padding:.7rem .8rem;margin:.45rem 0;border:1px solid var(--line);border-radius:var(--radius);background:var(--surface);cursor:pointer}
+.pick-card input{width:20px;height:20px;margin-top:.15rem;flex:none}
+.pick-card:has(input:checked){border-color:var(--accent);background:var(--accent-soft)}
+.sub-box{margin:.3rem 0 .6rem 2rem}
+.seg-sm .seg-btn{min-width:4.6rem;padding:0 .7rem}
+.owner-sum{display:flex;justify-content:space-between;align-items:center;gap:.8rem;flex-wrap:wrap;border-color:var(--accent);background:var(--accent-soft)}
+.owner-sum-text{min-width:0}
+.bulk-owner{margin-bottom:1rem}
+.bulk-owner p{margin:.2rem 0 .5rem}
+.tenant-note{display:block;color:var(--amber);margin-top:.15rem}
+@media (max-width:520px){
+  .dup-row{flex-direction:column;align-items:stretch}
+  .sub-box{margin-left:0}
+}
