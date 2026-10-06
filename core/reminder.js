@@ -204,7 +204,7 @@ export async function reminderDialog(flatId){
   // the person taps is never blocked as a popup, and on a phone it hands
   // straight over to the WhatsApp or Messages app.
   const wa  = el('a', { class:'btn primary' });
-  const sms = el('a', { class:'btn' });
+  const sms = el('a', { class:'btn', text:'Send as SMS' });
   const copy = el('button', { class:'btn', type:'button', text:'Copy text' });
   const syncLinks = () => {
     const msg = encodeURIComponent(text.value);
@@ -380,7 +380,7 @@ export async function ownerReminderDialog(ownerId){
   const langI = select(LANGS, { value: first.language || 'en' });
   const text  = el('textarea', { rows: 13, maxlength: '2000', class:'rem-text' });
   const wa = el('a', { class:'btn primary' });
-  const sms = el('a', { class:'btn' });
+  const sms = el('a', { class:'btn', text:'Send as SMS' });
   const copy = el('button', { class:'btn', type:'button', text:'Copy text' });
   const sync = () => {
     wireWhatsAppLink(wa, first.mobile_wa, text.value);
