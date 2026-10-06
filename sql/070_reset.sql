@@ -209,6 +209,16 @@ BEGIN
   DELETE FROM bms.adjustments WHERE true;           GET DIAGNOSTICS n = ROW_COUNT; v_deleted := v_deleted + n;
   DELETE FROM bms.payment_allocations WHERE true;   GET DIAGNOSTICS n = ROW_COUNT; v_deleted := v_deleted + n;
   DELETE FROM bms.payments WHERE true;              GET DIAGNOSTICS n = ROW_COUNT; v_deleted := v_deleted + n;
+  -- Combined receipts and sent bills arrive in 089; dynamic for the same
+  -- reason as the reminders below.
+  IF to_regclass('bms.payment_groups') IS NOT NULL THEN
+    EXECUTE 'DELETE FROM bms.payment_groups WHERE true';
+    GET DIAGNOSTICS n = ROW_COUNT; v_deleted := v_deleted + n;
+  END IF;
+  IF to_regclass('bms.bill_notices') IS NOT NULL THEN
+    EXECUTE 'DELETE FROM bms.bill_notices WHERE true';
+    GET DIAGNOSTICS n = ROW_COUNT; v_deleted := v_deleted + n;
+  END IF;
   DELETE FROM bms.charge_line_items WHERE true;     GET DIAGNOSTICS n = ROW_COUNT; v_deleted := v_deleted + n;
   DELETE FROM bms.flat_charges WHERE true;          GET DIAGNOSTICS n = ROW_COUNT; v_deleted := v_deleted + n;
   DELETE FROM bms.charge_runs WHERE true;           GET DIAGNOSTICS n = ROW_COUNT; v_deleted := v_deleted + n;

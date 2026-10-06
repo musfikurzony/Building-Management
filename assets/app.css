@@ -254,7 +254,7 @@ html.is-narrow textarea{min-height:44px;font-size:16px}
 }
 .b-paid,.b-posted,.b-approved,.b-active,.b-ok{background:var(--accent-soft);color:var(--accent);border-color:var(--accent)}
 .b-partial,.b-pending_approval,.b-submitted,.b-returned,.b-pending{background:var(--amber-soft);color:var(--amber);border-color:var(--amber)}
-.b-overdue,.b-rejected,.b-reversed,.b-cancelled,.b-inactive{background:var(--red-soft);color:var(--red);border-color:var(--red)}
+.b-overdue,.b-rejected,.b-reversed,.b-partly_reversed,.b-cancelled,.b-inactive{background:var(--red-soft);color:var(--red);border-color:var(--red)}
 .b-unpaid,.b-draft,.b-waived,.b-closed{background:var(--surface-2);color:var(--muted);border-color:var(--line)}
 .b-open{background:var(--blue-soft);color:var(--blue);border-color:var(--blue)}
 .chips{display:flex;flex-wrap:wrap;gap:.25rem;margin-top:.3rem}
@@ -615,3 +615,36 @@ label.btn.disabled{opacity:.55;pointer-events:none}
   body.printing-receipt .attach-card{display:none !important}
   .attach-card .btn,.attach-card .hint{display:none !important}
 }
+
+/* ---- v5: owners with several flats, combined payments, monthly bills ---- */
+.bad-text{color:var(--red)}
+.owe-list{margin:.4rem 0 .8rem;padding-left:1.1rem}
+.owe-list li{margin:.15rem 0}
+.pay-lines{display:flex;flex-direction:column;gap:.5rem;margin:.6rem 0}
+.pay-line{display:grid;grid-template-columns:auto 1fr minmax(7rem,9rem);align-items:center;gap:.7rem;
+  padding:.55rem .7rem;border:1px solid var(--line);border-radius:var(--radius);background:var(--surface);cursor:pointer}
+.pay-line input[type=checkbox]{width:22px;height:22px}
+.pay-line input[type=number]{min-height:var(--tap);text-align:right}
+.pay-line input:disabled{opacity:.45}
+.pay-flat{display:flex;flex-direction:column;min-width:0}
+.pay-total{font-size:1.1rem;text-align:right;margin:.3rem 0 .9rem}
+.rate-now{padding:.6rem .8rem;border-radius:var(--radius);background:var(--paper)}
+.rate-now.temp{background:var(--amber-soft);color:var(--amber)}
+.bill-list{display:grid;gap:.8rem;grid-template-columns:repeat(auto-fill,minmax(320px,1fr))}
+.bill-card{margin:0}
+.bill-card.sent{opacity:.8}
+.bill-head{display:flex;justify-content:space-between;gap:.8rem;align-items:flex-start}
+.bill-head h3{margin:0 0 .15rem}
+.bill-total{display:flex;flex-direction:column;align-items:flex-end;white-space:nowrap}
+.bill-total b{font-size:1.15rem}
+.bill-lines{width:100%;border-collapse:collapse;margin:.6rem 0;font-size:.92rem}
+.bill-lines td{padding:.3rem .2rem;border-top:1px solid var(--line-soft)}
+.bill-lines td.num{text-align:right;white-space:nowrap}
+.bill-foot{display:flex;align-items:center;justify-content:space-between;gap:.6rem;flex-wrap:wrap}
+@media (max-width:520px){
+  .bill-list{grid-template-columns:1fr}
+  .pay-line{grid-template-columns:auto 1fr;}
+  .pay-line input[type=number]{grid-column:1 / -1}
+}
+.bill-lines th{font-size:.75rem;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;padding:.2rem;text-align:left}
+.bill-lines th.num{text-align:right}

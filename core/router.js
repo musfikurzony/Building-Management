@@ -58,8 +58,13 @@ export function go(hash){
 }
 
 const cache = new Map();
+// Every render takes a ticket. A slow screen that finishes after the person
+// has already moved on (the dashboard still loading when they tap another
+// menu item) must not paint itself over the screen they went to.
+let ticket = 0;
 
 export async function renderRoute(host){
+  const mine = ++ticket;
   const { route, params, query } = currentRoute();
 
   if (!canAny(route.module) && !can(route.module, 'view')){
@@ -75,10 +80,12 @@ export async function renderRoute(host){
     let mod = cache.get(route.path);
     if (!mod){ mod = await route.load(); cache.set(route.path, mod); }
     const node = await mod.render({ params, query, state });
+    if (mine !== ticket) return route;
     host.replaceChildren(node);
     host.focus({ preventScroll:true });
     window.scrollTo({ top:0, behavior:'instant' });
   } catch (e){
+    if (mine !== ticket) return route;
     console.error(e);
     err(e.message || 'That screen failed to load');
     host.replaceChildren(el('div', { class:'card' },

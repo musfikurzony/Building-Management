@@ -9,12 +9,13 @@
    still opens, stamped REVERSED, so nobody can pass it off as proof.
    ===================================================================== */
 
-import { el, money, fdate, monthName, ok, err, modal, table, emptyState, badge } from './ui.js';
+import { el, money, fdate, monthName, ok, err, modal, table, emptyState, badge, reasonBox } from './ui.js';
 import { q, one, rpc, logEvent } from './db.js';
 import { ref, settings, can } from './store.js';
 import { receiptImage, receiptPdf, shareFile } from './receipt.js';
 import { wireWhatsAppLink } from './whatsapp.js';
 import { attachmentsCard } from './attachments.js';
+import { refresh } from './router.js';
 
 const methodName = (m) => String(m || '').replace(/_/g, ' ');
 
@@ -175,7 +176,12 @@ export async function receiptDialog(paymentId){
     hint: 'A bKash or bank screenshot, or a deposit slip. Kept with the payment; not sent to the flat.',
     entryDate: p.payment_date }) : null;
 
-  return modal({ title: `Receipt ${p.receipt_no || ''}`, body: el('div', {}, view, who, actions, proof),
+  // Part of a combined receipt for several flats: say so, and open it.
+  const groupNote = p.group_id ? el('p', { class:'small' }, 'Part of a combined receipt for several flats. ',
+    el('button', { class:'btn small', type:'button', text:'Open the combined receipt',
+      onclick: () => groupReceiptDialog(p.group_id) })) : null;
+
+  return modal({ title: `Receipt ${p.receipt_no || ''}`, body: el('div', {}, view, groupNote, who, actions, proof),
                  actions: [{ label:'Done', value:null }] });
 }
 
@@ -201,4 +207,116 @@ export async function receiptsCard(flatId, { limit = 24 } = {}){
         onclick: (e) => { e.stopPropagation(); receiptDialog(r.id); } }) }
   ], rows, { onRow: r => receiptDialog(r.id) }));
   return card;
+}
+
+/* ---------------------------------------------------------------------
+   The combined receipt — one payment from one person for several flats.
+   One receipt number; each flat on its own lines, with the months its
+   share settled; the total. Each flat also keeps its own receipt, so a
+   flat's statement and dues are exactly as if it had paid alone.
+   --------------------------------------------------------------------- */
+export async function groupReceiptDialog(groupId){
+  const g = await one('v_payment_groups', b => b.eq('id', groupId), { silent:true }).catch(() => null);
+  if (!g) return err('That combined receipt could not be found.');
+  const s = settings();
+  const [pays, flats] = await Promise.all([
+    q('payments', b => b.eq('group_id', groupId)), ref('flats')]);
+  const flatNo = (id) => (flats.find(f => f.id === id) || {}).flat_number || '';
+  pays.sort((a, b) => flatNo(a.flat_id).localeCompare(flatNo(b.flat_id), undefined, { numeric:true }));
+  const parts = await Promise.all(pays.map(async (p) => {
+    const [allocs, charges] = await Promise.all([
+      q('payment_allocations', b => b.eq('payment_id', p.id)).catch(() => []),
+      q('v_flat_charges', b => b.eq('flat_id', p.flat_id)).catch(() => [])]);
+    const months = allocs.map(a => {
+      const c = charges.find(x => x.id === a.flat_charge_id);
+      return { label: c ? (c.charge_source === 'OPENING' ? 'earlier balance' : monthName(c.period_year, c.period_month)) : 'applied',
+               amount: Number(a.amount) };
+    });
+    const allocated = months.reduce((t, m) => t + m.amount, 0);
+    return { p, flat: flatNo(p.flat_id), months, advance: p.status === 'ACTIVE' ? Number(p.amount) - allocated : 0 };
+  }));
+  const reversed = g.status === 'REVERSED';
+  const advanceTotal = parts.reduce((t, x) => t + Math.max(0, x.advance), 0);
+
+  const view = el('div', { id:'receiptBody', class:'receipt-view' + (reversed ? ' is-reversed' : '') },
+    el('div', { class:'center', style:'margin-bottom:.6rem' },
+      el('h3', { style:'margin:0', text: s.building_name || 'Building' }),
+      el('div', { class:'small muted', text: s.address || '' }),
+      el('div', { class:'small', style:'margin-top:.3rem', text:'Service charge receipt — several flats' })),
+    g.status !== 'ACTIVE' ? el('p', { class:'warn-line', text: reversed
+      ? 'This payment was reversed. The receipt is kept for the record and is stamped REVERSED.'
+      : 'Part of this payment was reversed — see the flats marked below.' }) : null,
+    el('dl', { class:'dl' },
+      el('dt', { text:'Receipt no' }), el('dd', { class:'mono', text: g.group_no }),
+      el('dt', { text:'Date' }), el('dd', { text: fdate(g.payment_date) }),
+      el('dt', { text:'Received from' }), el('dd', { text: g.payer_name || '' }),
+      el('dt', { text:'Flats' }), el('dd', { text: g.flat_list || '' }),
+      el('dt', { text:'Received' }), el('dd', { class:'num', style:'font-weight:700', text: money(g.total_amount) }),
+      el('dt', { text:'Method' }), el('dd', { text: String(g.method).replace(/_/g, ' ') }),
+      g.reference_no ? el('dt', { text:'Reference' }) : null, g.reference_no ? el('dd', { text: g.reference_no }) : null),
+    el('div', { class:'tablewrap', style:'margin-top:.8rem' }, el('table', {},
+      el('thead', {}, el('tr', {}, el('th', {}, 'Flat'), el('th', {}, 'Applied to'), el('th', { class:'num' }, 'Amount'))),
+      el('tbody', {}, parts.map(x => el('tr', {},
+        el('td', { text: x.flat + (x.p.status === 'REVERSED' ? ' (reversed)' : '') }),
+        el('td', { text: x.months.map(m => m.label).join(', ') + (x.advance > 0.001 ? `${x.months.length ? ' + ' : ''}advance ${money(x.advance)}` : '') || '—' }),
+        el('td', { class:'num', text: money(x.p.amount, { bare:true }) })))),
+      el('tfoot', {}, el('tr', {}, el('td', { text:'Total' }), el('td', {}), el('td', { class:'num', text: money(g.total_amount, { bare:true }) }))))));
+
+  const draw = () => receiptImage({
+    building: s.building_name || 'Building', address: s.address || '',
+    title: 'Service charge receipt — several flats',
+    receiptNo: g.group_no, date: fdate(g.payment_date), flat: g.flat_list || '',
+    from: g.payer_name || '', method: String(g.method).replace(/_/g, ' '), reference: g.reference_no || '',
+    amount: money(g.total_amount),
+    advance: advanceTotal > 0.001 ? `Kept as advance: ${money(advanceTotal)}` : '',
+    lines: parts.flatMap(x => x.months.length
+      ? x.months.map(m => ({ label: `${x.flat} · ${m.label}`, value: money(m.amount, { bare:true }) }))
+      : [{ label: `${x.flat} · advance`, value: money(x.p.amount, { bare:true }) }]),
+    footer: 'Thank you.', stamp: reversed ? 'REVERSED' : ''
+  });
+  const fileBase = `receipt-${g.group_no}`;
+  const shareText = `${s.building_name || 'Building'} — service charge receipt ${g.group_no}`;
+  const note = (how) => logEvent('NOTE', { module:'charges', table:'payment_groups', id: g.id, label: g.group_no, detail:`Combined receipt ${g.group_no} ${how}` });
+
+  const imgBtn = el('button', { class:'btn primary', type:'button', text:'Send as image', onclick: async () => {
+    const how = await shareFile(await draw(), `${fileBase}.png`, 'image/png', shareText);
+    if (how !== 'cancelled'){ ok(how === 'shared' ? 'Receipt shared' : 'Receipt image saved — attach it in WhatsApp'); note('sent as an image'); } } });
+  const pdfBtn = el('button', { class:'btn', type:'button', text:'Receipt PDF', onclick: async () => {
+    const how = await shareFile(await receiptPdf(await draw()), `${fileBase}.pdf`, 'application/pdf', shareText);
+    if (how !== 'cancelled'){ ok(how === 'shared' ? 'Receipt PDF shared' : 'Receipt PDF saved'); note('saved as a PDF'); } } });
+  let digits = null;
+  if (g.payer_owner_id){
+    const owner = await one('owners', b => b.eq('id', g.payer_owner_id), { silent:true }).catch(() => null);
+    if (owner?.mobile){ try { digits = await rpc('normalize_mobile', { p: owner.mobile }, { silent:true }); } catch {} }
+  }
+  const text = [`${s.building_name || 'Building'} — service charge receipt`, `Receipt: ${g.group_no}`,
+    `Date: ${fdate(g.payment_date)}`, ...parts.map(x => `Flat ${x.flat}: ${money(x.p.amount)}${x.months.length ? ' (' + x.months.map(m => m.label).join(', ') + ')' : ''}`),
+    `Total received: ${money(g.total_amount)}`, 'Thank you.'].join('\n');
+  const waText = el('a', { class:'btn', text:'Send as text' });
+  wireWhatsAppLink(waText, digits, text);
+  waText.addEventListener('click', () => note('sent as WhatsApp text'));
+  const printBtn = el('button', { class:'btn', type:'button', text:'Print', onclick: () => {
+    document.body.classList.add('printing-receipt');
+    const done = () => { document.body.classList.remove('printing-receipt'); window.removeEventListener('afterprint', done); };
+    window.addEventListener('afterprint', done); window.print(); setTimeout(done, 1500); } });
+
+  const actions = el('div', { class:'btn-row receipt-actions' });
+  if (reversed) actions.append(printBtn);
+  else actions.append(imgBtn, pdfBtn, waText, printBtn);
+  if (!reversed && can('charges', 'cancel')){
+    actions.append(el('button', { class:'btn danger', type:'button', text:'Reverse all', onclick: async () => {
+      const reason = await reasonBox(`Reverse ${g.group_no}?`, 'Why? A cheque bounced, wrong flats…', 'Reverse');
+      if (!reason) return;
+      try { await rpc('reverse_group_payment', { p_group: g.id, p_reason: reason });
+            ok('Reversed. Each flat owes again what this paid.'); closeDialog && closeDialog(null); refresh(); }
+      catch { /* toast */ }
+    } }));
+  }
+  const proof = can('charges', 'view') ? attachmentsCard({ entityTable:'payment_groups', entityId: g.id, bucket:'bms-receipts',
+    canAdd: can('charges', 'add') && !reversed, title:'Proof of payment',
+    hint:'A bKash or bank screenshot, or a deposit slip. Kept with the payment; not sent to the owner.', entryDate: g.payment_date }) : null;
+
+  let closeDialog = null;
+  return modal({ title:`Receipt ${g.group_no}`, body: el('div', {}, view, actions, proof), actions:[{ label:'Done', value:null }],
+                 onMount: (box, close) => { closeDialog = close; } });
 }

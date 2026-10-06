@@ -101,6 +101,19 @@ const MIGRATION_OF = {
   log_backup:            '087_community_backup.sql',
   remove_attachment:     '088_storage_setup.sql',
   uploaded_by_name:      '088_storage_setup.sql',
+  owner_accounts:        '089_owners_bills.sql',
+  owner_flats:           '089_owners_bills.sql',
+  month_bills:           '089_owners_bills.sql',
+  log_bill_notice:       '089_owners_bills.sql',
+  record_group_payment:  '089_owners_bills.sql',
+  reverse_group_payment: '089_owners_bills.sql',
+  v_payment_groups:      '089_owners_bills.sql',
+  payment_groups:        '089_owners_bills.sql',
+  set_temporary_rate:    '089_owners_bills.sql',
+  cancel_temporary_rate: '089_owners_bills.sql',
+  flat_rate_overrides:   '089_owners_bills.sql',
+  flat_rate_for:         '089_owners_bills.sql',
+  bill_template_en:      '089_owners_bills.sql',
 };
 
 /** True when the database has never heard of a function the app called —

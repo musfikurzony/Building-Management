@@ -45,7 +45,7 @@ export function amountText(n, lang){
   return lang === 'bn' ? bn(t) : t;
 }
 
-function monthLabel(y, m, lang){
+export function monthLabel(y, m, lang){
   return lang === 'bn' ? `${BN_MONTHS[m-1]} ${bn(y)}` : `${EN_MONTHS[m-1]} ${y}`;
 }
 
@@ -78,7 +78,7 @@ export function monthsText(months, lang){
   return parts.join(', ');
 }
 
-function dateText(iso, lang){
+export function dateText(iso, lang){
   if (!iso) return '';
   const d = new Date(String(iso).slice(0,10) + 'T00:00:00');
   return lang === 'bn'
@@ -333,4 +333,102 @@ export async function reminderHistory(flatId){
   ], rows, { onRow: r => modal({ title:`Sent ${fdatetime(r.sent_at)}`,
       body: el('pre', { class:'rem-sent', text: r.message }) }) }));
   return card;
+}
+
+/* ---------------------------------------------------------------------
+   One reminder for an owner who pays for several flats.
+
+   A land owner with three unpaid flats gets one message, not three: each
+   flat and the months it owes on a line of its own, and the total. The
+   reminder is recorded against every flat on it, so each flat's history
+   still says how many times it has been chased.
+   --------------------------------------------------------------------- */
+export async function ownerReminderDialog(ownerId){
+  let flats, account;
+  try {
+    [flats, account] = await Promise.all([
+      rpc('owner_flats', { p_owner: ownerId }, { silent:true }),
+      rpc('owner_accounts', {}, { silent:true }).then(rows => (rows || []).find(r => r.owner_id === ownerId))
+    ]);
+  } catch (e){
+    const o = e.original || e;
+    return err(isMissingObject(o) ? 'Owner reminders need a database update: run sql/PATCH.sql in Supabase.' : friendly(o));
+  }
+  const owing = (flats || []).filter(f => f.pays && Number(f.outstanding) > 0);
+  if (!owing.length){ ok('Nothing is owed on the flats this person pays for.'); return; }
+
+  let ctxs;
+  try { ctxs = await Promise.all(owing.map(f => rpc('reminder_context', { p_flat: f.flat_id }, { silent:true }))); }
+  catch (e){ return err(friendly(e.original || e)); }
+  const first = ctxs[0];
+  const order = ['GENTLE','FOLLOW_UP','FIRM'];
+  const suggested = ctxs.map(c => c.suggested_tone).sort((a, b) => order.indexOf(b) - order.indexOf(a))[0] || 'GENTLE';
+  const since = Math.max(...ctxs.map(c => Number(c.reminders_since_payment || 0)));
+
+  const values = (lang) => {
+    const base = valuesFor({ ...first, recipient_name: account?.owner_name || first.recipient_name }, lang);
+    const join = (arr) => arr.length < 2 ? arr.join('') :
+      arr.slice(0, -1).join(', ') + (lang === 'bn' ? ' ও ' : ' and ') + arr[arr.length - 1];
+    return { ...base,
+      flat: join(ctxs.map(c => c.flat_number)),
+      amount: amountText(account?.outstanding ?? owing.reduce((t, f) => t + Number(f.outstanding), 0), lang),
+      months: ctxs.map(c => `${lang === 'bn' ? 'ফ্ল্যাট' : 'Flat'} ${c.flat_number}: ${monthsText(c.months, lang)} — ` +
+                            (lang === 'bn' ? `${amountText(c.outstanding, lang)} টাকা` : `Tk ${amountText(c.outstanding, lang)}`)).join('; ') };
+  };
+
+  const toneI = select(TONES.map(t => ({ value:t.value, label: t.label + (t.value === suggested ? '  (suggested)' : '') })), { value: suggested });
+  const langI = select(LANGS, { value: first.language || 'en' });
+  const text  = el('textarea', { rows: 13, maxlength: '2000', class:'rem-text' });
+  const wa = el('a', { class:'btn primary' });
+  const sms = el('a', { class:'btn' });
+  const copy = el('button', { class:'btn', type:'button', text:'Copy text' });
+  const sync = () => {
+    wireWhatsAppLink(wa, first.mobile_wa, text.value);
+    wa.textContent = first.mobile_wa ? 'Send on WhatsApp' : 'Open WhatsApp (choose the contact)';
+    sms.href = first.mobile_wa ? `sms:+${first.mobile_wa}?&body=${encodeURIComponent(text.value)}` : '#';
+    sms.textContent = 'Send as SMS'; sms.hidden = !first.mobile_wa;
+  };
+  const rewrite = () => {
+    const tpl = (first.templates || {})[`${toneI.value}.${langI.value}`] || '';
+    text.value = fillTemplate(tpl, values(langI.value)); sync();
+  };
+  text.oninput = sync; toneI.onchange = rewrite; langI.onchange = rewrite;
+  rewrite();
+
+  let closeDialog = null, sent = false;
+  const record = async (channel, ev) => {
+    if (sent){ if (ev) ev.preventDefault(); return; }
+    sent = true;
+    try {
+      for (const c of owing)
+        await rpc('log_charge_reminder', { p_flat: c.flat_id, p_channel: channel, p_tone: toneI.value,
+                                          p_lang: langI.value, p_message: text.value }, { silent:true });
+      ok(`Reminder recorded against ${owing.length} flat${owing.length === 1 ? '' : 's'}.`);
+      closeDialog && closeDialog(true);
+      refresh();
+    } catch (e){ sent = false; err('The reminder could not be recorded: ' + friendly(e.original || e)); }
+  };
+  wa.onclick = (ev) => record('WHATSAPP', ev);
+  sms.onclick = (ev) => record('SMS', ev);
+  copy.onclick = async () => {
+    try { await navigator.clipboard.writeText(text.value); } catch { text.select(); document.execCommand && document.execCommand('copy'); }
+    await record('COPY');
+  };
+
+  const canSend = can('charges','add') && ctxs.every(c => c.can_send);
+  if (!canSend){ wa.hidden = true; sms.hidden = true; copy.hidden = true; }
+  const body = el('div', { class:'rem' },
+    el('div', { class:'rem-who' },
+      el('p', {}, el('span', { class:'muted', text:'To ' }), el('b', { text: account?.owner_name || first.recipient_name || '' }),
+        first.mobile ? el('span', { class:'mono', text:` · ${first.mobile}` }) : null),
+      !first.mobile_wa ? el('p', { class:'warn-line', text:'There is no WhatsApp-ready number on file; WhatsApp will ask whom to send to.' }) : null),
+    el('ul', { class:'owe-list' }, owing.map(f => el('li', {},
+      el('span', { text:`Flat ${f.flat_number}` }), el('b', { class:'num', text: money(f.outstanding) })))),
+    el('p', {}, el('span', { class:'muted', text:'Total owed ' }), el('b', { class:'num', text: money(account?.outstanding ?? 0) })),
+    el('p', { class:'small muted', text: since > 0 ? `The most-chased of these flats has been reminded ${since} time${since === 1 ? '' : 's'} since its last payment.` : 'None of these flats has been reminded since its last payment.' }),
+    el('div', { class:'grid g-form' }, field('Tone', toneI), field('Language', langI)),
+    field('Message', text, { hint:'One message for all the flats. You can change anything before sending.' }),
+    el('div', { class:'btn-row' }, wa, sms, copy));
+  return modal({ title:`Remind ${account?.owner_name || 'owner'} — ${owing.length} flat${owing.length === 1 ? '' : 's'}`, body,
+    actions:[{ label:'Close', value:null }], onMount: (box, close) => { closeDialog = close; } });
 }

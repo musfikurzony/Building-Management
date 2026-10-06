@@ -125,7 +125,7 @@ function layout(g, r, paint, H){
     y += opts.big ? 26 : 21;
   };
 
-  if (r.receiptNo) pair('Receipt no', r.receiptNo);
+  if (r.receiptNo) pair(r.noLabel || 'Receipt no', r.receiptNo);
   if (r.date)      pair('Date',       r.date);
   if (r.flat)      pair('Flat',       r.flat);
   if (r.from){
@@ -145,7 +145,7 @@ function layout(g, r, paint, H){
 
   y -= 4; rule(); y += 20;
 
-  pair('Received', r.amount || '', { big: true });
+  pair(r.amountLabel || 'Received', r.amount || '', { big: true });
 
   if (r.advance){
     if (paint){
