@@ -2,19 +2,20 @@
    with a bad connection. Supabase calls are never cached: a balance
    must always be the live one. */
 
-const CACHE = 'bms-shell-v11';
+const CACHE = 'bms-shell-v16';
 const SHELL = [
   './', './index.html', './manifest.json', './config.js',
   './assets/app.css', './assets/icon.svg', './vendor/supabase.js',
   './core/app.js', './core/ui.js', './core/db.js', './core/store.js',
-  './core/router.js', './core/i18n.js', './core/xlsx.js', './core/layout.js', './core/receipt.js', './core/reminder.js',
+  './core/router.js', './core/i18n.js', './core/xlsx.js', './core/layout.js', './core/receipt.js', './core/reminder.js', './core/receipts.js', './core/whatsapp.js', './core/attachments.js',
   './modules/dashboard.js', './modules/flats.js', './modules/charges.js',
   './modules/finance.js', './modules/bank.js', './modules/reports.js',
   './modules/users.js', './modules/audit.js', './modules/settings.js',
   './modules/assets.js', './modules/generator.js', './modules/lift.js',
   './modules/fire.js', './modules/maintenance.js', './modules/staff.js',
   './modules/salary.js', './modules/work.js', './modules/mosque.js',
-  './modules/reserve.js', './modules/budget.js', './modules/reconcile.js'
+  './modules/reserve.js', './modules/budget.js', './modules/reconcile.js',
+  './modules/community.js', './modules/backup.js', './modules/billing.js'
 ];
 
 self.addEventListener('install', (e) => {
