@@ -18,7 +18,7 @@ watchLayout();
 const ICONS = {
   dashboard:'▦', community:'❖', flats:'⌂', charges:'৳', finance:'☰', bank:'▤', reports:'▥',
   budget:'◎', reserve:'▣', generator:'⚡', lift:'⇅', fire:'△', maintenance:'✦',
-  staff:'☺', salary:'◧', work:'✓', mosque:'☾', users:'⚑', audit:'⏱', settings:'⚙'
+  staff:'☺', salary:'◧', work:'✓', mosque:'☾', lpg:'◍', users:'⚑', audit:'⏱', settings:'⚙'
 };
 
 const boot = $('#boot'), app = $('#app'), view = $('#view');
@@ -152,11 +152,14 @@ function buildNav(){
     .filter(m => m.is_enabled)
     .filter(m => ROUTES.some(r => r.module === m.code))
     .filter(m => canAny(m.code));
+  // LPG has no module of its own: it is the LPG fund, shown under Operations
+  // to anyone who may see the funds.
+  if (visible.some(m => m.code === 'reserve')) visible.push({ code:'lpg', name:'LPG', is_enabled:true });
 
   const groups = [
     ['', ['dashboard']],
     ['Building', ['community','flats','charges']],
-    ['Operations', ['generator','lift','fire','maintenance','work','mosque']],
+    ['Operations', ['generator','lift','fire','maintenance','work','mosque','lpg']],
     ['People', ['staff','salary']],
     ['Money', ['finance','bank','reserve','budget','reports']],
     ['Administration', ['users','audit','settings']]
@@ -402,7 +405,7 @@ async function route(){
       && state.modules.some(m => m.code === x.module && m.is_enabled));
     if (first){ location.hash = '#/' + first.path; return; }
   }
-  markActive(r.module);
+  markActive(r.nav || r.module);
   await renderRoute(view);
 }
 

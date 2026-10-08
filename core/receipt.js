@@ -133,7 +133,7 @@ function layout(g, r, paint, H){
     g.font = font(12, 500);
     let name = String(r.from);
     while (name.length > 4 && g.measureText(name).width > W - PAD * 2 - 100) name = name.slice(0, -2);
-    pair('Received from', name === String(r.from) ? name : name.trim() + '…');
+    pair(r.fromLabel || 'Received from', name === String(r.from) ? name : name.trim() + '…');
   }
   if (r.method)    pair('Method',     r.method);
   if (r.reference) pair('Reference',  String(r.reference).slice(0, 28));
@@ -147,12 +147,29 @@ function layout(g, r, paint, H){
 
   pair(r.amountLabel || 'Received', r.amount || '', { big: true });
 
+  // A line under the total in the ink colour — the bill's "Please pay by …".
+  if (r.note){
+    if (paint){
+      g.textAlign = 'center'; g.font = font(13, 600); g.fillStyle = INK;
+      g.fillText(r.note, W / 2, y);
+    }
+    y += 22;
+  }
+
   if (r.advance){
     if (paint){
       g.textAlign = 'center'; g.font = font(11); g.fillStyle = MUTED;
       g.fillText(r.advance, W / 2, y);
     }
     y += 20;
+  }
+
+  // The seal: a rubber stamp pressed under the total — PAID on a receipt,
+  // DUE on a bill. Its own space, so it never hides a figure.
+  if (r.seal){
+    y += 4;
+    if (paint) drawSeal(g, r.seal, W / 2, y + 40, font);
+    y += 88;
   }
 
   y += 12;
@@ -177,7 +194,44 @@ function layout(g, r, paint, H){
     g.restore();
   }
 
+  // The seal: a rubber stamp pressed beside the total — PAID on a receipt,
+  // DUE on a bill. Drawn, not an image, so it is as sharp as the text.
   return y;
+}
+
+const SEAL = { green:'#0b7a4b', red:'#b3261e', amber:'#a15c00' };
+
+/** A double-ringed oval stamp, tilted, with a word and a line under it. */
+function drawSeal(g, seal, cx, cy, font){
+  const col = SEAL[seal.color] || seal.color || SEAL.green;
+  g.save();
+  g.translate(cx, cy);
+  g.rotate(-0.24);
+  g.globalAlpha = 0.86;
+  g.strokeStyle = col; g.fillStyle = col;
+  const rx = 66, ry = 38;
+  g.lineWidth = 3;   g.beginPath(); g.ellipse(0, 0, rx, ry, 0, 0, Math.PI * 2); g.stroke();
+  g.lineWidth = 1.2; g.beginPath(); g.ellipse(0, 0, rx - 6, ry - 6, 0, 0, Math.PI * 2); g.stroke();
+  g.textAlign = 'center';
+  // Small lines shrink to sit inside the inner ring, never across it.
+  const fit = (text, size, yy) => {
+    const half = (rx - 8) * Math.sqrt(Math.max(0, 1 - (Math.abs(yy) + 3) ** 2 / (ry - 6) ** 2));
+    let sz = size; g.font = font(sz, 700);
+    while (sz > 5.5 && g.measureText(text).width > half * 2 - 6){ sz -= 0.5; g.font = font(sz, 700); }
+    g.fillText(text, 0, yy);
+  };
+  if (seal.top) fit(String(seal.top).toUpperCase().slice(0, 26), 7.5, -17);
+  g.font = font(seal.text.length > 5 ? 20 : 25, 900);
+  g.fillText(seal.text, 0, 8);
+  if (seal.sub) fit(String(seal.sub).toUpperCase(), 8.5, 21);
+  // A little wear, like ink that did not take everywhere.
+  g.globalCompositeOperation = 'destination-out';
+  g.globalAlpha = 0.18;
+  for (let i = 0; i < 26; i++){
+    const a = (i * 137.5) % 360 * Math.PI / 180, d = (i * 7.3) % rx;
+    g.beginPath(); g.arc(Math.cos(a) * d, Math.sin(a) * d * ry / rx, 1.1 + (i % 3) * 0.5, 0, Math.PI * 2); g.fill();
+  }
+  g.restore();
 }
 
 /** Greedy word wrap against a measured width. */

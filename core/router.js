@@ -25,6 +25,8 @@ export const ROUTES = [
   { path:'salary',    module:'salary',    title:'Salary',           load: () => import('../modules/salary.js') },
   { path:'work',      module:'work',      title:'Work Monitoring',  load: () => import('../modules/work.js') },
   { path:'mosque',    module:'mosque',    title:'Mosque',           load: () => import('../modules/mosque.js') },
+  // LPG is a view over the LPG fund, so it follows the Reserve & Funds permissions.
+  { path:'lpg',       module:'reserve',   nav:'lpg', title:'LPG fund', load: () => import('../modules/lpg.js') },
   { path:'users',     module:'users',     title:'Users & Roles',    load: () => import('../modules/users.js') },
   { path:'audit',     module:'audit',     title:'Audit Log',        load: () => import('../modules/audit.js') },
   { path:'settings',  module:'settings',  title:'Settings',         load: () => import('../modules/settings.js') }

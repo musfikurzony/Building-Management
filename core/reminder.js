@@ -16,9 +16,11 @@
 
 import { el, field, select, money, fdate, fdatetime, ok, err, modal, table, emptyState } from './ui.js';
 import { rpc, q, isMissingObject, friendly } from './db.js';
-import { can } from './store.js';
+import { can, settings } from './store.js';
 import { refresh } from './router.js';
 import { wireWhatsAppLink } from './whatsapp.js';
+import { receiptImage } from './receipt.js';
+import { slipPreview } from './slip.js';
 
 export const TONES = [
   { value:'GENTLE',    label:'Gentle — a first reminder' },
@@ -218,11 +220,30 @@ export async function reminderDialog(flatId){
   };
 
   const canSend = !!ctx.can_send && can('charges','add');
-  const actions = el('div', { class:'btn-row' }, wa, sms, copy);
+  // The DUE slip: the same reminder as a stamped picture, PDF or print.
+  const slip = el('button', { class:'btn', type:'button', text:'DUE slip — preview & send' });
+  const drawDue = () => receiptImage({
+    building: ctx.building_name || 'Building', address: settings().address || '',
+    title: 'Service charge due', noLabel: 'Date', receiptNo: fdate(new Date().toISOString().slice(0, 10)),
+    flat: ctx.flat_number || '', from: ctx.recipient_name || '', fromLabel: 'Bill to',
+    lines: (ctx.months || []).map(m => ({ label: m.source === 'OPENING' ? 'Earlier balance' : monthLabel(m.year, m.month, 'en'),
+                                          value: money(m.due, { bare:true }) })),
+    amountLabel: 'Total due', amount: money(ctx.outstanding),
+    note: ctx.deadline_date ? `Please pay by ${fdate(ctx.deadline_date)}` : 'Please pay at your earliest convenience',
+    footer: ctx.how_to_pay ? String(ctx.how_to_pay).slice(0, 70) : 'Thank you.',
+    seal: { text:'DUE', sub: ctx.deadline_date ? `By ${fdate(ctx.deadline_date)}` : 'Unpaid', top: ctx.building_name || '', color:'red' } });
+  slip.onclick = () => slipPreview({
+    title: `DUE slip — flat ${ctx.flat_number}`, draw: drawDue,
+    fileBase: `due-${ctx.flat_number}-${new Date().toISOString().slice(0, 10)}`,
+    shareText: `${ctx.building_name || ''} — service charge due, flat ${ctx.flat_number}`,
+    digits: ctx.mobile_wa, text: text.value,
+    note: ctx.recipient_name ? `Goes to ${ctx.recipient_name}${ctx.mobile ? ' · ' + ctx.mobile : ''}.` : null,
+    onSent: (ch) => record(ch === 'DOWNLOAD' ? 'IMAGE' : ch) });
+  const actions = el('div', { class:'btn-row' }, wa, sms, slip, copy);
   const note = el('p', { class:'hint', text: canSend
     ? 'Sending records this reminder against the flat — who, when, to which number, and these exact words.'
     : 'You can read this, but sending reminders needs permission to record service-charge entries.' });
-  if (!canSend){ wa.hidden = true; sms.hidden = true; copy.hidden = true; }
+  if (!canSend){ wa.hidden = true; sms.hidden = true; copy.hidden = true; slip.hidden = true; }
 
   const body = el('div', { class:'rem' },
     who, owes, history,
@@ -238,8 +259,13 @@ export async function reminderDialog(flatId){
     if (!text.value.trim()){ if (ev) ev.preventDefault(); err('The message is empty.'); return; }
     sent = true;
     try {
-      await rpc('log_charge_reminder', { p_flat: flatId, p_channel: channel,
-        p_tone: toneI.value, p_lang: langI.value, p_message: text.value }, { silent: true });
+      const args = { p_flat: flatId, p_channel: channel, p_tone: toneI.value, p_lang: langI.value, p_message: text.value };
+      // Before 092 the log knew only WhatsApp, SMS and copy: a slip still counts.
+      try { await rpc('log_charge_reminder', args, { silent: true }); }
+      catch (e1){
+        if (!['IMAGE','PDF','PRINT'].includes(channel) || !/Unknown channel/i.test((e1.original || e1).message || '')) throw e1;
+        await rpc('log_charge_reminder', { ...args, p_channel: 'COPY' }, { silent: true });
+      }
       const n = since + 1;
       ok(`Reminder recorded — the ${ordinal(n)} since the last payment.`);
       closeDialog && closeDialog(true);

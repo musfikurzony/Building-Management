@@ -15,6 +15,7 @@ import { ref, settings, can } from './store.js';
 import { receiptImage, receiptPdf, shareFile } from './receipt.js';
 import { wireWhatsAppLink } from './whatsapp.js';
 import { attachmentsCard } from './attachments.js';
+import { slipPreview } from './slip.js';
 import { refresh } from './router.js';
 
 const methodName = (m) => String(m || '').replace(/_/g, ' ');
@@ -66,7 +67,8 @@ async function drawReceipt(r){
     advance:   r.advance > 0.001 ? `Kept as advance: ${money(r.advance)}` : '',
     lines:     r.lines.map(l => ({ label: l.label, value: money(l.amount, { bare:true }) })),
     footer:    'Thank you.',
-    stamp:     r.p.status === 'REVERSED' ? 'REVERSED' : ''
+    stamp:     r.p.status === 'REVERSED' ? 'REVERSED' : '',
+    seal:      r.p.status === 'REVERSED' ? null : { text:'PAID', sub: fdate(r.p.payment_date), top: s.building_name || '', color:'green' }
   });
 }
 
@@ -129,7 +131,14 @@ export async function receiptDialog(paymentId){
 
   const shareText = `${s.building_name || 'Building'} — service charge receipt ${p.receipt_no}`;
 
-  const imgBtn = el('button', { class:'btn primary', type:'button', text:'Send as image' });
+  const previewBtn = el('button', { class:'btn primary', type:'button', text:'Preview & send' });
+  previewBtn.onclick = () => slipPreview({
+    title: `Receipt ${p.receipt_no} — PAID`, draw: () => drawReceipt(r), fileBase, shareText,
+    digits: r.digits, text: receiptText(r),
+    note: r.to ? `Goes to ${r.to}${r.mobile ? ' · ' + r.mobile : ''}.` : null,
+    onSent: (ch) => note(`sent (${ch.toLowerCase()}) from the preview`) });
+
+  const imgBtn = el('button', { class:'btn', type:'button', text:'Send as image' });
   imgBtn.onclick = busy(imgBtn, async () => {
     const how = await shareFile(await drawReceipt(r), `${fileBase}.png`, 'image/png', shareText);
     if (how === 'shared')     { ok('Receipt shared'); note('shared as an image'); }
@@ -161,7 +170,7 @@ export async function receiptDialog(paymentId){
 
   const actions = el('div', { class:'btn-row receipt-actions' });
   if (reversed) actions.append(printBtn);
-  else actions.append(imgBtn, pdfBtn, waText, printBtn);
+  else actions.append(previewBtn, imgBtn, pdfBtn, waText, printBtn);
 
   const who = !reversed && r.to
     ? el('p', { class:'small muted', text: `Bills for this flat go to ${r.to}${r.mobile ? ' · ' + r.mobile : ''}.` +
@@ -272,7 +281,8 @@ export async function groupReceiptDialog(groupId){
     lines: parts.flatMap(x => x.months.length
       ? x.months.map(m => ({ label: `${x.flat} · ${m.label}`, value: money(m.amount, { bare:true }) }))
       : [{ label: `${x.flat} · advance`, value: money(x.p.amount, { bare:true }) }]),
-    footer: 'Thank you.', stamp: reversed ? 'REVERSED' : ''
+    footer: 'Thank you.', stamp: reversed ? 'REVERSED' : '',
+    seal: reversed ? null : { text:'PAID', sub: fdate(g.payment_date), top: s.building_name || '', color:'green' }
   });
   const fileBase = `receipt-${g.group_no}`;
   const shareText = `${s.building_name || 'Building'} — service charge receipt ${g.group_no}`;
@@ -300,9 +310,13 @@ export async function groupReceiptDialog(groupId){
     const done = () => { document.body.classList.remove('printing-receipt'); window.removeEventListener('afterprint', done); };
     window.addEventListener('afterprint', done); window.print(); setTimeout(done, 1500); } });
 
+  const previewBtn = el('button', { class:'btn primary', type:'button', text:'Preview & send', onclick: () => slipPreview({
+    title:`Receipt ${g.group_no} — PAID`, draw, fileBase, shareText, digits, text,
+    note: `Goes to ${g.payer_name || 'the payer'}.`, onSent: (ch) => note(`sent (${ch.toLowerCase()}) from the preview`) }) });
+  imgBtn.classList.remove('primary');
   const actions = el('div', { class:'btn-row receipt-actions' });
   if (reversed) actions.append(printBtn);
-  else actions.append(imgBtn, pdfBtn, waText, printBtn);
+  else actions.append(previewBtn, imgBtn, pdfBtn, waText, printBtn);
   if (!reversed && can('charges', 'cancel')){
     actions.append(el('button', { class:'btn danger', type:'button', text:'Reverse all', onclick: async () => {
       const reason = await reasonBox(`Reverse ${g.group_no}?`, 'Why? A cheque bounced, wrong flats…', 'Reverse');
