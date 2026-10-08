@@ -695,3 +695,4 @@ label.btn.disabled{opacity:.55;pointer-events:none}
   body.printing-slip #slipPrint{display:flex !important;justify-content:center}
   body.printing-slip #slipPrint img{width:90mm;height:auto}
 }
+.bill-lines td:first-child{white-space:nowrap}
