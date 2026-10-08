@@ -2,7 +2,7 @@
    with a bad connection. Supabase calls are never cached: a balance
    must always be the live one. */
 
-const CACHE = 'bms-shell-v17';
+const CACHE = 'bms-shell-v21';
 const SHELL = [
   './', './index.html', './manifest.json', './config.js',
   './assets/app.css', './assets/icon.svg', './vendor/supabase.js',
@@ -15,7 +15,7 @@ const SHELL = [
   './modules/fire.js', './modules/maintenance.js', './modules/staff.js',
   './modules/salary.js', './modules/work.js', './modules/mosque.js',
   './modules/reserve.js', './modules/budget.js', './modules/reconcile.js',
-  './modules/community.js', './modules/backup.js', './modules/billing.js', './core/people.js'
+  './modules/community.js', './modules/backup.js', './modules/billing.js', './core/people.js', './core/accounts.js', './modules/lpg.js', './core/slip.js'
 ];
 
 self.addEventListener('install', (e) => {
