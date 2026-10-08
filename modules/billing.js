@@ -324,6 +324,19 @@ export async function billsView(query){
     if (!rows.length) return page;
   }
 
+  // Some flats billed and some not — usually a flat added after the month
+  // was generated. Their payments wait as advance until they are billed.
+  const notYet = rows.filter(r => !r.is_billed);
+  if (rows.some(r => r.is_billed) && notYet.length){
+    const box = el('div', { class:'alert normal' }, el('div', { class:'a-body' },
+      el('div', { class:'a-title', text:`${notYet.length} flat${notYet.length === 1 ? ' is' : 's are'} not billed for ${monthName(y, m)} yet: ${notYet.map(r => r.flat_number).join(', ')}` }),
+      el('div', { class:'a-meta', text:'Usually a flat added after the month was generated. Bill them now — only the missing flats are added, and any advance they paid settles the new charge at once.' })));
+    if (can('charges', 'add')) box.append(el('button', { class:'btn', type:'button', text:'Bill them now', onclick: async () => {
+      try { const run = await rpc('generate_monthly_charges', { p_year: y, p_month: m }); ok((Array.isArray(run) ? run[0] : run)?.notes || 'Billed.'); refresh(); } catch {}
+    } }));
+    page.append(box);
+  }
+
   let payers = byPayer(rows);
   if (onlyPayer) payers = payers.filter(p => p.id === onlyPayer);
   const toSend = payers.filter(p => p.id && p.total > 0 && !p.sent);
@@ -354,7 +367,7 @@ export async function billsView(query){
         el('td', { text:`Flat ${f.flat_number}` + (f.rate_source === 'TEMPORARY' ? ' (temporary rate)' : '') }),
         el('td', { class:'num', text: Number(f.this_month) ? money(f.this_month, { bare:true }) : '—' }),
         el('td', { class:'num small muted', text: Number(f.previous_due) > 0 ? `+ ${money(f.previous_due, { bare:true })} earlier` : '' }),
-        el('td', { class:'num', text: Number(f.total_due) > 0 ? money(f.total_due, { bare:true }) : 'paid' }))))),
+        el('td', { class:'num', text: Number(f.total_due) > 0 ? money(f.total_due, { bare:true }) : (f.is_billed ? 'paid' : 'not billed') }))))),
       el('div', { class:'bill-foot' },
         p.sent ? el('span', { class:'badge b-active', text:`sent ${fdate(String(p.lastSent).slice(0, 10))}` })
                : (p.total > 0 ? el('span', { class:'badge b-overdue', text:'not sent' }) : el('span', { class:'badge b-draft', text:'nothing to pay' })),
@@ -413,15 +426,29 @@ async function billDialog(payer, y, m, { queue = false } = {}){
     await record('COPY');
   };
   const owes = Number(payer.total) > 0;
+  // Each flat: the month's charge, what has been paid against it, earlier
+  // dues, and any money paid ahead — so a paid bill shows what was paid,
+  // not a bare Tk 0.00.
+  let paidShown = 0;
+  const billLines = payer.flats.flatMap(f => {
+    const out = [];
+    const chg = Number(f.this_month), paidM = Math.max(chg - Number(f.this_month_due), 0);
+    if (chg) out.push({ label:`${f.flat_number} · ${monthName(y, m)}`, value: money(chg, { bare:true }) });
+    if (paidM > 0){ out.push({ label:`${f.flat_number} · paid`, value: '− ' + money(paidM, { bare:true }) }); paidShown += paidM; }
+    if (Number(f.previous_due) > 0) out.push({ label:`${f.flat_number} · earlier dues`, value: money(f.previous_due, { bare:true }) });
+    if (Number(f.advance) > 0){
+      out.push({ label:`${f.flat_number} · paid in advance`, value: money(f.advance, { bare:true }) });
+      if (!chg) paidShown += Number(f.advance);
+    }
+    return out;
+  });
   const drawBill = () => receiptImage({
       building: s.building_name || 'Building', address: s.address || '',
       title: `Service charge bill — ${monthName(y, m)}`, noLabel: 'Bill for', receiptNo: monthName(y, m),
       date: '', flat: payer.flats.map(f => f.flat_number).join(', '), from: payer.name || '', fromLabel: 'Bill to',
-      lines: payer.flats.flatMap(f => [
-        ...(Number(f.this_month) ? [{ label:`${f.flat_number} · ${monthName(y, m)}`, value: money(f.this_month_due, { bare:true }) }] : []),
-        ...(Number(f.previous_due) > 0 ? [{ label:`${f.flat_number} · earlier dues`, value: money(f.previous_due, { bare:true }) }] : [])]),
-      amountLabel: 'Total payable', amount: money(payer.total),
-      note: owes ? `Please pay by ${fdate(payer.due_date)}` : 'Nothing to pay this month — thank you.',
+      lines: billLines,
+      amountLabel: owes ? 'Total payable' : 'Paid', amount: money(owes ? payer.total : paidShown),
+      note: owes ? `Please pay by ${fdate(payer.due_date)}` : 'Nothing left to pay — thank you.',
       footer: s.reminder_how_to_pay ? String(s.reminder_how_to_pay).slice(0, 70) : 'Thank you.',
       seal: owes ? { text:'DUE', sub:`By ${fdate(payer.due_date)}`, top: s.building_name || '', color:'red' }
                  : { text:'PAID', sub: monthName(y, m), top: s.building_name || '', color:'green' }

@@ -2205,6 +2205,48 @@ const run = async () => {
     check('it opens on the usual cash account, by its real name', pick && /Cash in hand/.test(pick.chosen) && /usual/.test(pick.chosen), pick?.chosen);
   });
 
+  /* Reported: next month generated as a trial; every flat then owed two
+     months and this month's bills listed next month as earlier dues. */
+  await section('a month billed ahead is not owed yet', async () => {
+    await signIn(page, 'admin@test');
+    const d = new Date(), Y = d.getFullYear(), M = d.getMonth() + 1;
+    const nx = new Date(Y, M, 1), NY = nx.getFullYear(), NM = nx.getMonth() + 1;
+    const before = await page.evaluate(async ([Y, M]) => {
+      const db = await import('/core/db.js');
+      const dues = await db.q('v_flat_dues', b => b.order('flat_number'));
+      const bills = await db.rpc('month_bills', { p_year: Y, p_month: M });
+      return { dues: Object.fromEntries(dues.map(x => [x.flat_id, Number(x.outstanding)])), bills: Object.fromEntries(bills.map(x => [x.flat_id, Number(x.total_due)])) };
+    }, [Y, M]);
+    await gotoHash(page, '#/charges');
+    await page.locator('button:has-text("Generate a month")').click();
+    await page.waitForSelector('.modal');
+    await page.locator('.modal input[type=number]').fill(String(NY));
+    await page.locator('.modal select').selectOption(String(NM));
+    await page.waitForTimeout(300);
+    check('generating a month that has not started warns that it is billed ahead', /has not started yet/.test(await page.textContent('.modal')));
+    await page.locator('.modal button:has-text("Generate")').last().click();
+    await dismissBillsOffer(page);
+    await page.waitForTimeout(1200);
+    const after = await page.evaluate(async ([Y, M]) => {
+      const db = await import('/core/db.js');
+      const dues = await db.q('v_flat_dues', b => b.order('flat_number'));
+      const bills = await db.rpc('month_bills', { p_year: Y, p_month: M });
+      return { dues: Object.fromEntries(dues.map(x => [x.flat_id, Number(x.outstanding)])), ahead: dues.reduce((t, x) => t + Number(x.billed_ahead), 0),
+               bills: Object.fromEntries(bills.map(x => [x.flat_id, Number(x.total_due)])) };
+    }, [Y, M]);
+    check('what flats owe does not change when next month is billed early',
+          Object.keys(before.dues).every(k => before.dues[k] === after.dues[k]), JSON.stringify([before.dues, after.dues]).slice(0, 200));
+    check('next month is shown as billed ahead instead', after.ahead > 0, String(after.ahead));
+    check('this month\u2019s bills stay exactly as they were',
+          Object.keys(before.bills).every(k => before.bills[k] === after.bills[k]), JSON.stringify([before.bills, after.bills]).slice(0, 200));
+    await gotoHash(page, '#/charges');
+    await page.waitForTimeout(800);
+    const h = await page.evaluate(() => [...document.querySelectorAll('main h2')].map(x => x.textContent).find(t => /flat by flat/.test(t)) || '');
+    const want = `${['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][M - 1]} ${Y}`;
+    check('the service charge page opens on the running month, not the one billed ahead', h.startsWith(want), h);
+    check('and marks next month as billed ahead', /billed ahead, not due yet/.test(await page.textContent('main')));
+  });
+
   /* ---------------- SYSTEM RESET ----------------
      Last, because it empties the database it runs against. The database
      rules are proved in sql/test/t07_reset.sql; what is checked here is

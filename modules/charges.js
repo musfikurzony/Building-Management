@@ -53,7 +53,9 @@ async function monthsView(){
   const rows = await q('v_monthly_collection', b => b.eq('period_year', year)
     .order('period_month', { ascending:false }));
 
-  const totals = rows.reduce((t,r) => ({
+  // A month billed ahead (generated before it began) is not owed yet.
+  const ahead = (r) => r.period_year * 12 + r.period_month > now.getFullYear() * 12 + now.getMonth() + 1;
+  const totals = rows.filter(r => !ahead(r)).reduce((t,r) => ({
     charged: t.charged + Number(r.charged||0),
     collected: t.collected + Number(r.collected||0),
     outstanding: t.outstanding + Number(r.outstanding||0)
@@ -66,7 +68,8 @@ async function monthsView(){
     stat('Collection rate',   totals.charged > 0 ? Math.round(totals.collected / totals.charged * 100) + '%' : '—')));
 
   const cols = [
-    { label:'Month', primary:true, fmt: r => monthName(r.period_year, r.period_month), csv: r => monthName(r.period_year, r.period_month) },
+    { label:'Month', primary:true, fmt: r => ahead(r) ? el('span', {}, monthName(r.period_year, r.period_month), el('span', { class:'small muted', text:' · billed ahead, not due yet' })) : monthName(r.period_year, r.period_month),
+      csv: r => monthName(r.period_year, r.period_month) },
     { label:'Flats', cls:'num', fmt: r => num(r.charge_count), csv: r => r.charge_count },
     { label:'Charged', cls:'num', fmt: r => money(r.charged, { bare:true }), csv: r => r.charged },
     { label:'Collected', cls:'num', fmt: r => money(r.collected, { bare:true }), csv: r => r.collected },
@@ -83,10 +86,16 @@ async function monthsView(){
     el('div', { class:'card-head' }, el('h2', { text:`Monthly collection — ${year}` }),
       can('charges','export') ? el('button', { class:'btn small', text:'CSV',
         onclick: () => { downloadCSV(`collection-${year}.csv`, cols, rows); logEvent('EXPORT',{module:'charges'}); } }) : null),
-    table(cols, rows, { empty:`Nothing generated for ${year} yet. Use “Generate a month”.` })));
+    table(cols, rows, { empty:`Nothing generated for ${year} yet. Use “Generate a month”.`,
+      onRow: async (r) => { gridHost.replaceChildren(await monthGrid(r.period_year, r.period_month)); gridHost.scrollIntoView({ behavior:'smooth' }); } }),
+    rows.length > 1 ? el('p', { class:'hint', text:'Tap a month to see it flat by flat.' }) : null));
+  const gridHost = el('div', {});
 
-  const latest = rows[0];
-  if (latest) page.append(await monthGrid(latest.period_year, latest.period_month));
+  // The running month first — not a month billed ahead as a trial.
+  const cur = now.getFullYear() * 12 + now.getMonth() + 1;
+  const latest = rows.find(r => r.period_year * 12 + r.period_month <= cur) || rows[rows.length - 1] || null;
+  if (latest) gridHost.append(await monthGrid(latest.period_year, latest.period_month));
+  page.append(gridHost);
   return page;
 }
 
@@ -101,9 +110,10 @@ async function monthGrid(y, m){
     { label:'Payable', cls:'num', fmt: r => money(r.net_payable, { bare:true }), csv: r => r.net_payable },
     { label:'Paid', cls:'num', fmt: r => money(r.paid_amount, { bare:true }), csv: r => r.paid_amount },
     { label:'Due', cls:'num', fmt: r => money(r.due_amount, { bare:true }), csv: r => r.due_amount },
-    { label:'Status', fmt: r => badge(r.status), csv: r => r.status },
+    { label:'Status', fmt: r => r.not_due_yet && r.status === 'UNPAID' ? el('span', { class:'badge b-draft', text:'not due yet' }) : badge(r.status),
+      csv: r => r.not_due_yet && r.status === 'UNPAID' ? 'NOT_DUE_YET' : r.status },
     { label:'Reminded', fmt: r => reminderCell(sums.get(r.flat_id)), csv: r => sums.get(r.flat_id)?.since ?? 0 },
-    { label:'', fmt: r => Number(r.due_amount) > 0 ? (remindButton(r.flat_id) || '') : '', csv: () => null }
+    { label:'', fmt: r => Number(r.due_amount) > 0 && !r.not_due_yet ? (remindButton(r.flat_id) || '') : '', csv: () => null }
   ];
   return el('section', { class:'card' },
     el('div', { class:'card-head' }, el('h2', { text:`${monthName(y,m)} — flat by flat` }),
@@ -130,6 +140,11 @@ async function generateDialog(){
     el('div', { class:'grid g-form' }, field('Year', y), field('Month', m)),
     el('p', {}, 'Expected total: ', el('b', { class:'num', text: money(preview) })),
     el('p', { class:'hint', text:'A flat on a temporary rate (for example still under construction) is billed at that rate for the months it covers.' }),
+    (() => { const w = el('p', { class:'warn-line' }); const sync = () => {
+        const ahead = Number(y.value) * 12 + Number(m.value) > now.getFullYear() * 12 + now.getMonth() + 1;
+        w.hidden = !ahead;
+        w.textContent = ahead ? `${monthName(Number(y.value), Number(m.value))} has not started yet. Its charges are kept as "billed ahead": not counted as owed, not on this month's bills or reminders, until the 1st of that month.` : '';
+      }; y.addEventListener('input', sync); m.addEventListener('change', sync); setTimeout(sync); return w; })(),
     el('p', { class:'hint', text:'Safe to run again later. It bills only the flats that are not billed for that month yet, so adding a flat mid-month and pressing this again picks it up without charging anyone twice.' }));
 
   const res = await modal({ title:'Generate monthly charges', body, actions:[
@@ -321,7 +336,8 @@ async function statement(flatId){
   page.append(el('div', { class:'grid g-stats' },
     stat('Monthly charge', money(flat.service_charge ?? settings().default_service_charge),
          flat.service_charge ? 'set for this flat' : 'building default'),
-    stat('Outstanding', money(d.outstanding || 0), null, Number(d.outstanding) > 0 ? 'bad' : 'good'),
+    stat('Outstanding', money(d.outstanding || 0), Number(d.billed_ahead) > 0 ? `+ ${money(d.billed_ahead)} billed ahead, not due yet` : null,
+         Number(d.outstanding) > 0 ? 'bad' : 'good'),
     stat('Advance held', money(d.advance || 0)),
     stat('Last payment', d.last_payment_date ? fdate(d.last_payment_date) : 'never')));
 
@@ -355,7 +371,7 @@ async function statement(flatId){
         el('span', { style:'flex:1;min-width:8rem',
           text: c.charge_source === 'OPENING' ? 'Balance brought forward' : monthName(c.period_year, c.period_month) }),
         el('span', { class:'num', text: money(c.due_amount) }),
-        badgeEl(c.status));
+        c.not_due_yet ? el('span', { class:'badge b-draft', text:'billed ahead — not due yet' }) : badgeEl(c.status));
       if (can('charges','waive')){
         const w = el('button', { class:'btn small', text:'Request waiver' });
         w.onclick = () => waiverDialog(c);

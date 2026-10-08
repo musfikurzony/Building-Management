@@ -103,7 +103,9 @@ SELECT t.eq('and then no longer applies', 'FLAT', (SELECT source FROM bms.flat_r
 -- ---------------------------------------------------------------------
 -- 3. ONE PAYMENT FOR SEVERAL FLATS.
 -- ---------------------------------------------------------------------
-SELECT t.remember('dues_before', (SELECT outstanding::text FROM bms.owner_accounts() WHERE owner_name = 'Haji Karim'));
+-- Months billed ahead (these are next month and later) are not owed yet,
+-- so the payment is measured against everything billed, due or not.
+SELECT t.remember('dues_before', (SELECT SUM(outstanding + billed_ahead)::text FROM bms.v_flat_dues WHERE flat_id IN (t.uid('a102'), t.uid('a103'))));
 SELECT t.runs('Karim pays one sum for A-102 and A-103', $$
   SELECT t.remember('grp', (bms.record_group_payment(t.uid('karim'),
     jsonb_build_array(jsonb_build_object('flat', t.uid('a102'), 'amount', 4500),
@@ -116,7 +118,7 @@ SELECT t.eq('made of one payment per flat', 2::bigint, (SELECT COUNT(*) FROM bms
 SELECT t.eq('each flat''s own statement shows its own share', 4500.00,
   (SELECT amount FROM bms.payments WHERE group_id = t.uid('grp') AND flat_id = t.uid('a102')));
 SELECT t.eq('Karim''s dues fall by exactly the sum', t.recall('dues_before')::numeric - 5500,
-  (SELECT outstanding FROM bms.owner_accounts() WHERE owner_name = 'Haji Karim'));
+  (SELECT SUM(outstanding + billed_ahead) FROM bms.v_flat_dues WHERE flat_id IN (t.uid('a102'), t.uid('a103'))));
 SELECT t.eq('the combined receipt lists both flats', 'A-102, A-103', (SELECT flat_list FROM bms.v_payment_groups WHERE id = t.uid('grp')));
 SELECT t.eq('and is whole', 'ACTIVE', (SELECT status FROM bms.v_payment_groups WHERE id = t.uid('grp')));
 SELECT t.eq('the income is booked once per flat', 2::bigint,
@@ -136,7 +138,7 @@ SELECT t.runs('the whole combined receipt can be reversed', $$
   SELECT bms.reverse_group_payment(t.uid('grp'), 'Cheque bounced') $$);
 SELECT t.eq('every part is reversed', 'REVERSED', (SELECT status FROM bms.v_payment_groups WHERE id = t.uid('grp')));
 SELECT t.eq('and Karim owes what he owed before', t.recall('dues_before')::numeric,
-  (SELECT outstanding FROM bms.owner_accounts() WHERE owner_name = 'Haji Karim'));
+  (SELECT SUM(outstanding + billed_ahead) FROM bms.v_flat_dues WHERE flat_id IN (t.uid('a102'), t.uid('a103'))));
 SELECT t.throws('it cannot be reversed twice', $$ SELECT bms.reverse_group_payment(t.uid('grp'), 'Again') $$, 'already reversed');
 
 -- ---------------------------------------------------------------------
@@ -149,9 +151,11 @@ SELECT t.eq('A-101''s bill goes to the tenant who pays', 'Rafiq Tenant',
 SELECT t.eq('a bill''s total is this month plus what was owed before', 0::bigint,
   (SELECT COUNT(*) FROM bms.month_bills(EXTRACT(year FROM t.nm(0))::int, EXTRACT(month FROM t.nm(0))::int)
     WHERE total_due <> previous_due + this_month_due));
-SELECT t.eq('and matches the dues on record', 0::bigint,
+SELECT t.eq('and matches the dues on record up to that month, never later ones', 0::bigint,
   (SELECT COUNT(*) FROM bms.month_bills(EXTRACT(year FROM t.nm(0))::int, EXTRACT(month FROM t.nm(0))::int) b
-     JOIN bms.v_flat_dues d ON d.flat_id = b.flat_id WHERE b.total_due <> d.outstanding));
+    WHERE b.total_due <> (SELECT COALESCE(SUM(GREATEST(c.due_amount, 0)), 0) FROM bms.v_flat_charges c
+                           WHERE c.flat_id = b.flat_id AND NOT c.is_cancelled
+                             AND (c.charge_source = 'OPENING' OR c.period_start <= t.nm(0)))));
 SELECT t.eq('it is due on the building''s due day',
   (SELECT make_date(EXTRACT(year FROM t.nm(0))::int, EXTRACT(month FROM t.nm(0))::int, charge_due_day) FROM bms.building_settings),
   (SELECT due_date FROM bms.month_bills(EXTRACT(year FROM t.nm(0))::int, EXTRACT(month FROM t.nm(0))::int) WHERE flat_number = 'A-102'));
