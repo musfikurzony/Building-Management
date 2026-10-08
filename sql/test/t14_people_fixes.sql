@@ -119,3 +119,20 @@ SELECT t.throws('a caretaker cannot correct an owner', $$
   SELECT bms.correct_occupant(t.uid('wrong'), NULL, 'Someone') $$, 'permission denied');
 
 RESET ROLE;
+
+-- ---------------------------------------------------------------------
+-- 092: a DUE slip sent as a picture counts as a reminder.
+-- ---------------------------------------------------------------------
+SET ROLE authenticated;
+SELECT set_config('request.jwt.claim.sub', t.recall('admin'), false);
+SELECT bms.generate_monthly_charges(EXTRACT(year FROM CURRENT_DATE)::int, EXTRACT(month FROM CURRENT_DATE)::int);
+SELECT t.runs('a DUE slip sent as a picture is recorded as a reminder', $$
+  SELECT bms.log_charge_reminder(t.uid('a101'), 'IMAGE', 'GENTLE', 'en', 'Due slip (picture)') $$);
+SELECT t.runs('and as a PDF or on paper', $$
+  SELECT bms.log_charge_reminder(t.uid('a101'), 'PDF', 'GENTLE', 'en', 'Due slip (PDF)'),
+         bms.log_charge_reminder(t.uid('a101'), 'PRINT', 'GENTLE', 'en', 'Due slip (print)') $$);
+SELECT t.eq('all three count since the last payment', 3::bigint,
+  (SELECT COUNT(*) FROM bms.charge_reminders WHERE flat_id = t.uid('a101') AND channel IN ('IMAGE','PDF','PRINT')));
+SELECT t.throws('an unknown channel is still refused', $$
+  SELECT bms.log_charge_reminder(t.uid('a101'), 'CARRIER_PIGEON', 'GENTLE', 'en', 'x') $$, 'Unknown channel');
+RESET ROLE;

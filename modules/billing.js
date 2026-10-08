@@ -25,6 +25,7 @@ import { ownerReminderDialog, amountText, monthLabel, dateText, fillTemplate } f
 import { wireWhatsAppLink } from '../core/whatsapp.js';
 import { receiptImage, receiptPdf, shareFile } from '../core/receipt.js';
 import { duplicatesCard } from '../core/people.js';
+import { slipPreview } from '../core/slip.js';
 
 const needsUpdate = (what) => el('div', { class:'alert normal' }, el('div', { class:'a-body' },
   el('div', { class:'a-title', text:`${what} needs a database update` }),
@@ -411,23 +412,33 @@ async function billDialog(payer, y, m, { queue = false } = {}){
     try { await navigator.clipboard.writeText(text.value); } catch { text.select(); document.execCommand && document.execCommand('copy'); }
     await record('COPY');
   };
-  img.onclick = async () => {
-    const blob = await receiptImage({
+  const owes = Number(payer.total) > 0;
+  const drawBill = () => receiptImage({
       building: s.building_name || 'Building', address: s.address || '',
       title: `Service charge bill — ${monthName(y, m)}`, noLabel: 'Bill for', receiptNo: monthName(y, m),
-      date: '', flat: payer.flats.map(f => f.flat_number).join(', '), from: payer.name || '',
+      date: '', flat: payer.flats.map(f => f.flat_number).join(', '), from: payer.name || '', fromLabel: 'Bill to',
       lines: payer.flats.flatMap(f => [
         ...(Number(f.this_month) ? [{ label:`${f.flat_number} · ${monthName(y, m)}`, value: money(f.this_month_due, { bare:true }) }] : []),
         ...(Number(f.previous_due) > 0 ? [{ label:`${f.flat_number} · earlier dues`, value: money(f.previous_due, { bare:true }) }] : [])]),
-      amountLabel: `Pay by ${fdate(payer.due_date)}`, amount: money(payer.total),
-      footer: s.reminder_how_to_pay ? String(s.reminder_how_to_pay).slice(0, 70) : 'Thank you.'
+      amountLabel: 'Total payable', amount: money(payer.total),
+      note: owes ? `Please pay by ${fdate(payer.due_date)}` : 'Nothing to pay this month — thank you.',
+      footer: s.reminder_how_to_pay ? String(s.reminder_how_to_pay).slice(0, 70) : 'Thank you.',
+      seal: owes ? { text:'DUE', sub:`By ${fdate(payer.due_date)}`, top: s.building_name || '', color:'red' }
+                 : { text:'PAID', sub: monthName(y, m), top: s.building_name || '', color:'green' }
     });
-    const how = await shareFile(blob, `bill-${y}-${String(m).padStart(2,'0')}-${(payer.name || 'payer').replace(/\W+/g, '-')}.png`, 'image/png',
-                                `${s.building_name || ''} — service charge bill ${monthName(y, m)}`);
+  const billFile = `bill-${y}-${String(m).padStart(2,'0')}-${(payer.name || 'payer').replace(/\W+/g, '-')}`;
+  const billCaption = `${s.building_name || ''} — service charge bill ${monthName(y, m)}`;
+  img.onclick = async () => {
+    const how = await shareFile(await drawBill(), `${billFile}.png`, 'image/png', billCaption);
     if (how !== 'cancelled') await record('IMAGE');
   };
+  const preview = el('button', { class:'btn primary', type:'button', text:'Preview & send', onclick: () => slipPreview({
+    title:`Bill — ${payer.name || ''} — ${monthName(y, m)}`, draw: drawBill, fileBase: billFile, shareText: billCaption,
+    digits, text: text.value, note: `Goes to ${payer.name || 'the payer'}${payer.mobile ? ' · ' + payer.mobile : ''}.`,
+    onSent: (ch) => record(ch === 'DOWNLOAD' ? 'IMAGE' : ch) }) });
   const canSend = can('charges', 'add');
-  if (!canSend){ wa.hidden = true; sms.hidden = true; copy.hidden = true; img.hidden = true; }
+  if (!canSend){ wa.hidden = true; sms.hidden = true; copy.hidden = true; img.hidden = true; preview.hidden = true; }
+  wa.classList.remove('primary');
   const body = el('div', { class:'rem' },
     el('div', { class:'rem-who' }, el('p', {}, el('span', { class:'muted', text:'To ' }), el('b', { text: payer.name || '' }),
       payer.mobile ? el('span', { class:'mono', text:` · ${payer.mobile}` }) : null),
@@ -436,7 +447,7 @@ async function billDialog(payer, y, m, { queue = false } = {}){
       el('span', { class:'muted', text:` by ${fdate(payer.due_date)}` })),
     field('Language', langI),
     field('Bill', text, { hint:'Written from Settings → Monthly bill message. You can change anything before sending.' }),
-    el('div', { class:'btn-row' }, wa, sms, img, copy));
+    el('div', { class:'btn-row' }, preview, wa, sms, img, copy));
   return modal({ title:`Bill — ${payer.name || ''} — ${monthName(y, m)}`, body, actions:[{ label:'Close', value:null }],
                  onMount: (box, close) => { closeDialog = close; } });
 }

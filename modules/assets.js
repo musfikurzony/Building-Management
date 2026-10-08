@@ -10,6 +10,7 @@ import { el, html, field, select, money, money0, num, fdate, fdatetime, badge,
          downloadCSV, todayISO, monthName } from '../core/ui.js';
 import { q, one, rpc, logEvent } from '../core/db.js';
 import { can, ref, state, settings, invalidate } from '../core/store.js';
+import { accountSelect } from '../core/accounts.js';
 import { go, refresh } from '../core/router.js';
 
 const KINDS = {
@@ -456,7 +457,7 @@ async function fuelDialog(assets){
   const vendI  = select(vendors.map(v => ({ value:v.id, label:v.name })), { placeholder:'None' });
   const invI   = el('input', { type:'text', maxlength:'60', placeholder:'Invoice number' });
   const hourI  = el('input', { type:'number', step:'0.1', inputmode:'decimal', placeholder:'hour meter' });
-  const acctI  = select(accounts.map(a => ({ value:a.id, label:a.name })), { placeholder:'Default cash account' });
+  const acctI  = accountSelect(accounts);
   const total  = el('p', { class:'hint' });
 
   const sync = () => {
@@ -511,7 +512,7 @@ async function serviceDialog(a){
                        { value: a.service_provider_id, placeholder:'None' });
   const techI = el('input', { type:'text', maxlength:'80', placeholder:'Who came?' });
   const nextI = el('input', { type:'date' });
-  const acctI = select(accounts.map(x => ({ value:x.id, label:x.name })), { placeholder:'Default cash account' });
+  const acctI = accountSelect(accounts);
   const partI = el('input', { type:'text', maxlength:'80', placeholder:'Part replaced (optional)' });
   const pcostI= el('input', { type:'number', step:'0.01', min:'0', inputmode:'decimal', placeholder:'0.00' });
 

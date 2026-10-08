@@ -28,7 +28,7 @@ const ROUTES = [
   '#/settings', '#/flats/owners', '#/charges/outstanding', '@flat',
   '#/charges/payments', '#/reports/entries', '#/reports/annual', '#/reports/backup',
   '#/community', '#/community/rules', '@doc',
-  '#/charges/owners', '@owner', '#/charges/bills', '#/flats/setup',
+  '#/charges/owners', '@owner', '#/charges/bills', '#/flats/setup', '#/lpg',
 ];
 
 async function signIn(page, email){
@@ -205,8 +205,10 @@ const run = async () => {
       ['#/charges/bills', 'Send bill', '.modal .rem-text', 'bill dialog']]){
       await page.evaluate(h => { location.hash = h; }, hash);
       await page.waitForTimeout(1000);
+      await page.waitForFunction(t => [...document.querySelectorAll('main button')].some(b => b.textContent.trim() === t), button, { timeout: 8000 }).catch(() => {});
       await page.evaluate(t => [...document.querySelectorAll('main button')].find(b => b.textContent.trim() === t)?.click(), button);
-      await page.waitForTimeout(1200);
+      await page.waitForSelector(sel, { timeout: 6000 }).catch(() => {});
+      await page.waitForTimeout(400);
       if (await page.isVisible(sel)){
         const o = await overflow(page, dev.width);
         const bad = await page.evaluate(() => [...document.querySelectorAll('.modal button, .modal a, .modal select, .modal textarea, .modal input')]

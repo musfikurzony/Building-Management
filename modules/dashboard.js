@@ -115,6 +115,9 @@ async function adminDashboard(){
       ie.length > 1 ? monthlyBars(ie) : null)));
   }
 
+  /* ---- where it came from and where it went ---- */
+  if (can('reports','view')){ const dc = await deptCard(); if (dc) page.append(dc); }
+
   /* ---- service charge ---- */
   if (can('charges','view')){
     const c = collection[0];
@@ -177,6 +180,10 @@ async function adminDashboard(){
         el('div', { class:'bar' + (p < 40 ? ' over' : p < 80 ? ' warn' : '') },
           el('span', { style:`width:${p}%` }))));
     }
+    const lpg = funds.find(f => /lpg/i.test(`${f.code} ${f.name}`));
+    if (lpg) body.append(el('a', { class:'lpg-line', href:'#/lpg' },
+      el('span', {}, el('b', { text:'LPG fund' }), el('span', { class:'small muted', text:' — for the next cylinder' })),
+      el('b', { class:'num', text: money0(lpg.current_balance) })));
     body.append(el('a', { class:'btn small', style:'margin-top:.8rem', href:'#/reserve', text:'Open reserve & funds' }));
     page.append(section('Reserve', body));
   }
@@ -228,6 +235,61 @@ async function adminDashboard(){
     page.append(section('Operations', el('div', { class:'grid g-stats' }, ...opsCards)));
 
   return page;
+}
+
+/* Money in and money out, by department, for this month or this year.
+   Two plain ranked lists rather than one two-colour chart: each is one
+   series, read top to bottom, with the amount written beside every bar.
+   A department opens to show its categories. */
+async function deptCard(){
+  const box = el('section', { class:'card dept-card' });
+  const head = el('div', { class:'card-head' }, el('h2', { text:'Where the money came from and went' }));
+  const chips = el('div', { class:'chip-row' });
+  const host = el('div', {});
+  box.append(head, chips, host);
+  let span = 'MONTH';
+  const iso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const load = async () => {
+    const from = span === 'MONTH' ? new Date(Y, M - 1, 1) : new Date(Y, 0, 1);
+    let rows;
+    try { rows = await rpc('report_income_expense', { p_from: iso(from), p_to: iso(new Date(Y, M, 0)) }, { silent:true }); }
+    catch { box.hidden = true; return; }
+    chips.replaceChildren(...[['MONTH', monthName(Y, M)], ['YEAR', `${Y} so far`]].map(([k, l]) =>
+      el('button', { type:'button', class:'filter-chip' + (span === k ? ' on' : ''), 'aria-pressed': String(span === k), text: l,
+        onclick: () => { span = k; load(); } })));
+    const side = (dir) => {
+      const map = new Map();
+      for (const r of (rows || []).filter(r => r.direction === dir)){
+        const d = map.get(r.department_name) || { name: r.department_name, total: 0, cats: [] };
+        d.total += Number(r.amount); d.cats.push({ name: r.category_name, amount: Number(r.amount), entries: Number(r.entries) });
+        map.set(r.department_name, d);
+      }
+      return [...map.values()].sort((a, b) => b.total - a.total);
+    };
+    const list = (title, items, cls) => {
+      const total = items.reduce((t, d) => t + d.total, 0);
+      const max = Math.max(1, ...items.map(d => d.total));
+      return el('div', { class:'dept-side' },
+        el('div', { class:'dept-title' }, el('b', { text: title }), el('b', { class:'num', text: money0(total) })),
+        items.length ? el('div', {}, items.map(d => el('details', { class:'dept-row ' + cls },
+          el('summary', { title: `${d.name}: ${money(d.total)} (${Math.round(d.total * 100 / (total || 1))}%)` },
+            el('span', { class:'dept-name', text: d.name }),
+            el('span', { class:'dept-bar' }, el('span', { style:`width:${Math.max(2, d.total * 100 / max)}%` })),
+            el('span', { class:'dept-amt num', text: money0(d.total) })),
+          el('ul', { class:'dept-cats' }, d.cats.map(c => el('li', {},
+            el('span', { text: c.name }), el('span', { class:'num', text: `${money0(c.amount)}` }))))))) :
+          el('p', { class:'muted small', text:'Nothing recorded.' }));
+    };
+    const inc = side('INCOME'), exp = side('EXPENSE');
+    const net = inc.reduce((t, d) => t + d.total, 0) - exp.reduce((t, d) => t + d.total, 0);
+    host.replaceChildren(
+      el('div', { class:'dept-grid' }, list('Money in', inc, 'in'), list('Money out', exp, 'out')),
+      el('p', { class:'small', style:'margin-top:.6rem' }, net >= 0 ? 'Left over: ' : 'Spent more than came in: ', el('b', { text: money0(Math.abs(net)) }),
+        el('span', { class:'muted', text:' · tap a department to see its categories · ' }),
+        el('a', { href:'#/reports', text:'Open the monthly report' })));
+  };
+  await load();
+  return box.hidden ? null : box;
 }
 
 function sevOrder(a, b){

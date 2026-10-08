@@ -5,6 +5,7 @@ import { el, html, field, select, money, fdate, fdatetime, badge, table, emptySt
          toast, ok, err, modal, reasonBox, confirmBox, downloadCSV, todayISO, monthName } from '../core/ui.js';
 import { q, one, rpc, logEvent } from '../core/db.js';
 import { can, ref, state, settings, invalidate } from '../core/store.js';
+import { accountSelect } from '../core/accounts.js';
 import { go } from '../core/router.js';
 import { attachmentsCard } from '../core/attachments.js';
 
@@ -134,7 +135,7 @@ async function entryForm(){
   const amtI  = el('input', { type:'number', step:'0.01', min:'0.01', required:true, inputmode:'decimal', placeholder:'0.00' });
   const methI = select(['CASH','BANK_TRANSFER','CHEQUE','BKASH','NAGAD','ROCKET','CARD']
                   .map(m => ({ value:m, label:m.replace(/_/g,' ') })), { value:'CASH' });
-  const acctI = select(accounts.map(a => ({ value:a.id, label:`${a.name} (${a.kind.toLowerCase()})` })), { placeholder:'Default cash account' });
+  const acctI = accountSelect(accounts);
   const toI   = select(accounts.map(a => ({ value:a.id, label:a.name })), { placeholder:'Into which account' });
   const vendI = select(vendors.map(v => ({ value:v.id, label:v.name })), { placeholder:'None' });
   const flatI = select(flats.map(f => ({ value:f.id, label:f.flat_number })), { placeholder:'Not flat-specific' });
@@ -256,7 +257,7 @@ async function entryForm(){
         field('Payment method', methI)),
       limitNote,
       el('div', { class:'grid g-form' },
-        field('Paid from / into', acctI, { hint:'Leave blank to use the default cash account' }),
+        field('Paid from / into', acctI, { hint:'Where the money physically went out of, or came into. Service charge collected sits in Cash in hand until you deposit it — record the deposit as a Transfer to the bank.' }),
         toField),
       el('div', { class:'grid g-form' }, deptField, catField), catNote,
       el('div', { class:'grid g-form' }, vendField, flatField),

@@ -360,7 +360,7 @@ const run = async () => {
   await page.waitForSelector('.modal');
   await page.locator('.modal input[type=number]').nth(0).fill('40');
   await page.locator('.modal input[type=number]').nth(1).fill('100');
-  await page.locator('.modal select').nth(3).selectOption({ label: 'Main bank account' });
+  await page.locator('.modal select').nth(3).selectOption({ label: 'Main bank account (bank)' });
   await page.locator('.modal button:has-text("Save")').click();
   await page.waitForTimeout(2500);
   await gotoHash(page, '#/bank');
@@ -1595,6 +1595,59 @@ const run = async () => {
     check('and its spending under its own department', /LPG fund/.test(rep));
   });
 
+  /* Requested: an LPG page under Operations — how much the fund had, what
+     cylinders cost, what came back, and the balance. */
+  await section('the LPG page', async () => {
+    await gotoHash(page, '#/dashboard');
+    await page.waitForTimeout(600);
+    const navLpg = await page.evaluate(() => {
+      const links = [...document.querySelectorAll('.navlink')];
+      const i = links.findIndex(a => a.getAttribute('href') === '#/lpg');
+      const g = [...document.querySelectorAll('.nav-group, .navlink')];
+      const at = g.findIndex(x => x.getAttribute && x.getAttribute('href') === '#/lpg');
+      const group = g.slice(0, at).reverse().find(x => x.classList.contains('nav-group'))?.textContent;
+      return { found: i >= 0, group };
+    });
+    check('LPG is in the menu under Operations', navLpg.found && navLpg.group === 'Operations', JSON.stringify(navLpg));
+    await gotoHash(page, '#/lpg');
+    await page.waitForTimeout(800);
+    const t0 = await page.textContent('main');
+    check('the LPG page shows the fund balance', /Balance now/.test(t0) && /17,000/.test(t0), t0.slice(0, 200).replace(/\s+/g, ' '));
+    check('what it started with and what was spent', /Started with/.test(t0) && /20,000/.test(t0) && /Spent on cylinders/.test(t0) && /3,000/.test(t0));
+    check('the menu marks LPG, not Reserve, as the open page', await page.evaluate(() =>
+      document.querySelector('.navlink[aria-current=page]')?.getAttribute('href')) === '#/lpg');
+
+    await page.click('main button:has-text("Refilled from LPG collection")');
+    await page.waitForSelector('.modal .choice-list');
+    check('a refill starts on "Received into the fund"', /Received into the fund/.test(await page.locator('.modal .choice.on').textContent()));
+    const cat = await page.evaluate(() => [...document.querySelectorAll('.modal label.field')].find(l => /Category/.test(l.textContent))
+      ?.querySelector('select')?.selectedOptions[0]?.textContent || '');
+    check('with the LPG refill category already chosen', /LPG fund refilled/.test(cat), cat);
+    await page.locator('.modal label:has-text("Amount put back") input').fill('2500');
+    await page.evaluate(() => {
+      const sel = [...document.querySelectorAll('.modal label.field')].find(l => /Received into account/.test(l.textContent))?.querySelector('select');
+      sel.selectedIndex = 1; sel.dispatchEvent(new Event('change'));
+    });
+    await page.locator('.modal button:has-text("Record")').click();
+    await page.waitForTimeout(1600);
+    const t1 = await page.textContent('main');
+    check('a refill raises the balance', /19,500/.test(t1), t1.slice(0, 260).replace(/\s+/g, ' '));
+    check('and the month table carries the balance forward', await page.locator('main section:has(h2:text-is("Month by month")) tbody tr').count() >= 1 &&
+          /19,500/.test(await page.locator('main section:has(h2:text-is("Month by month"))').innerText()));
+
+    await gotoHash(page, '#/dashboard');
+    await page.waitForTimeout(1200);
+    const dc = page.locator('main .dept-card');
+    check('the dashboard shows money in and out by department', await dc.count() === 1 && /Money in/.test(await dc.innerText()) && /Money out/.test(await dc.innerText()));
+    check('LPG fund among them', /LPG fund/.test(await dc.innerText()));
+    await dc.locator('.dept-row.out summary', { hasText: 'LPG fund' }).first().click();
+    check('a department opens to its categories', /LPG cylinder bought from LPG fund/.test(await dc.innerText()));
+    await dc.locator('button:has-text("so far")').click();
+    await page.waitForTimeout(900);
+    check('and it switches to the whole year', /on/.test(await dc.locator('button:has-text("so far")').getAttribute('class')));
+    check('the reserve card links to the LPG page', await page.locator('main a.lpg-line[href="#/lpg"]').count() === 1);
+  });
+
   await section('a new department from Settings', async () => {
     await gotoHash(page, '#/settings');
     await page.click('main button:has-text("New department")');
@@ -1930,6 +1983,7 @@ const run = async () => {
     check('the bill has a line per flat', /Flat L-701/.test(bill) && /Flat L-703 .*temporary rate/.test(bill), bill.slice(0, 200));
     check('the total', /Total payable: Tk 7,000/.test(bill));
     check('and the due day', /Please pay by \d+ \w+ \d{4}/.test(bill) || /Please pay by/.test(bill));
+    check('the bill can be previewed as a stamped DUE slip', await page.locator('.modal button:has-text("Preview & send")').count() === 1);
     check('the bill dialog has no unlabelled button', await page.evaluate(() => [...document.querySelectorAll('.modal a.btn, .modal button')]
       .filter(b => !b.hidden && !b.textContent.trim() && !b.getAttribute('aria-label')).length) === 0);
     const wa = await page.getAttribute('.modal a.btn[href*="wa.me"]', 'href');
@@ -2074,6 +2128,81 @@ const run = async () => {
     check('ticking it adds it to the total', /15,000/.test(total), total);
     await page.locator('.modal button:has-text("Cancel")').click();
 
+  });
+
+  /* Requested: a PAID seal on the receipt, a DUE slip, and a preview
+     before sending — picture, PDF, download, WhatsApp, SMS, print. */
+  await section('PAID and DUE slips with a preview', async () => {
+    await signIn(page, 'admin@test');
+    await page.evaluate(() => document.addEventListener('click', e => {
+      const a = e.target.closest && e.target.closest('a[href^="https://wa.me"], a[href^="sms:"]');
+      if (a) e.preventDefault();
+    }, true));
+    await gotoHash(page, '#/charges/payments');
+    await page.locator('main tbody tr', { hasNotText: /reversed/i }).first().click();
+    await page.waitForSelector('.modal #receiptBody', { timeout: 6000 });
+    await page.click('.modal button:has-text("Preview & send")');
+    await page.waitForSelector('.modal .slip-preview img', { timeout: 6000 });
+    await page.waitForFunction(() => [...document.querySelectorAll('.modal .slip-preview img')].some(i => i.naturalWidth > 0));
+    const opts = await page.evaluate(() => [...document.querySelectorAll('.modal .slip-actions .btn')].map(b => b.textContent.trim()));
+    check('the receipt preview shows the picture with every way to send it',
+          ['Send picture', 'Download picture', 'PDF', 'Print'].every(t => opts.includes(t)) && opts.some(t => /WhatsApp/.test(t)), opts.join(' | '));
+    const [png] = await Promise.all([page.waitForEvent('download', { timeout: 15000 }), page.click('.modal .slip-actions button:has-text("Download picture")')]);
+    const pbuf = fs.readFileSync(await png.path());
+    check('Download picture saves the stamped receipt as a PNG', pbuf[0] === 0x89 && /\.png$/.test(png.suggestedFilename()), png.suggestedFilename());
+    const seal = await page.evaluate(async () => {
+      // The PAID seal is drawn in green under the total: look for its ink.
+      const img = [...document.querySelectorAll('.modal .slip-preview img')].pop();
+      const c = document.createElement('canvas'); c.width = img.naturalWidth; c.height = img.naturalHeight;
+      const g = c.getContext('2d'); g.drawImage(img, 0, 0);
+      const d = g.getImageData(0, Math.floor(c.height * 0.6), c.width, Math.floor(c.height * 0.35)).data;
+      let green = 0; for (let i = 0; i < d.length; i += 4) if (d[i+1] > 100 && d[i] < 90 && d[i+2] < 120) green++;
+      return green;
+    });
+    check('the receipt carries the PAID seal', seal > 400, String(seal));
+    const [pdf] = await Promise.all([page.waitForEvent('download', { timeout: 15000 }), page.click('.modal .slip-actions button:has-text("PDF")')]);
+    check('and the preview gives a PDF too', /\.pdf$/.test(pdf.suggestedFilename()));
+    await page.locator('.modal:has(.slip-preview) button:has-text("Close")').click();
+    await page.waitForTimeout(300);
+    await page.locator('.modal button:has-text("Done")').click();
+
+    // A flat's DUE slip, from the reminder.
+    await gotoHash(page, '#/charges/outstanding');
+    await page.waitForTimeout(600);
+    const before = await page.evaluate(async () => (await (await import('/core/db.js')).q('charge_reminders', b => b.in('channel', ['IMAGE','PDF','PRINT']))).length);
+    await page.evaluate(() => [...document.querySelectorAll('main tbody button')].find(b => b.textContent.trim() === 'Remind')?.click());
+    await page.waitForSelector('.modal .rem', { timeout: 6000 });
+    await page.click('.modal button:has-text("DUE slip")');
+    await page.waitForSelector('.modal .slip-preview img', { timeout: 6000 });
+    const red = await page.evaluate(async () => {
+      const img = [...document.querySelectorAll('.modal .slip-preview img')].pop();
+      await new Promise(r => img.complete ? r() : (img.onload = r));
+      const c = document.createElement('canvas'); c.width = img.naturalWidth; c.height = img.naturalHeight;
+      const g = c.getContext('2d'); g.drawImage(img, 0, 0);
+      const d = g.getImageData(0, Math.floor(c.height * 0.55), c.width, Math.floor(c.height * 0.4)).data;
+      let n = 0; for (let i = 0; i < d.length; i += 4) if (d[i] > 150 && d[i+1] < 90 && d[i+2] < 90) n++;
+      return n;
+    });
+    check('a flat\u2019s DUE slip carries the red DUE seal', red > 400, String(red));
+    await Promise.all([page.waitForEvent('download', { timeout: 15000 }), page.click('.modal .slip-actions button:has-text("Download picture")')]);
+    await page.waitForTimeout(1200);
+    const after = await page.evaluate(async () => (await (await import('/core/db.js')).q('charge_reminders', b => b.in('channel', ['IMAGE','PDF','PRINT']))).length);
+    check('sending the DUE slip counts as a reminder', after === before + 1, `${before} → ${after}`);
+    await page.locator('.modal:has(.slip-preview) button:has-text("Close")').click();
+  });
+
+  /* Reported: "Paid from" offered "Default cash account" next to "Cash in hand",
+     which read like two cash boxes. */
+  await section('the account picker opens on the real account', async () => {
+    await signIn(page, 'admin@test');
+    await gotoHash(page, '#/finance/new');
+    await page.waitForTimeout(500);
+    const pick = await page.evaluate(() => {
+      const sel = [...document.querySelectorAll('main label.field')].find(l => /Paid from/.test(l.textContent))?.querySelector('select');
+      return sel ? { opts: [...sel.options].map(o => o.text), chosen: sel.selectedOptions[0]?.text || '' } : null;
+    });
+    check('no "Default cash account" pseudo-option', pick && !pick.opts.some(t => /Default cash account/i.test(t)), JSON.stringify(pick));
+    check('it opens on the usual cash account, by its real name', pick && /Cash in hand/.test(pick.chosen) && /usual/.test(pick.chosen), pick?.chosen);
   });
 
   /* ---------------- SYSTEM RESET ----------------

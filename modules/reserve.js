@@ -210,12 +210,12 @@ async function fundDialog(fund){
   } catch (e){ err(e.message); }
 }
 
-async function movementDialog(fund, direction){
+export async function movementDialog(fund, direction, { mode: presetMode, title, purposeHint, amountLabel } = {}){
   const isOut = direction === 'WITHDRAWAL';
   const dateI = el('input', { type:'date', value: todayISO(), required:true });
   const amtI  = el('input', { type:'number', step:'0.01', min:'0.01', required:true, inputmode:'decimal' });
   const purpI = el('input', { type:'text', maxlength:'200',
-    placeholder: isOut ? 'e.g. Cylinder for October, lift motor, committee resolution 12' : 'e.g. Monthly contribution, repaid from LPG collection' });
+    placeholder: purposeHint || (isOut ? 'e.g. Cylinder for October, lift motor, committee resolution 12' : 'e.g. Monthly contribution, repaid from LPG collection') });
   const noteI = el('textarea', { rows:'2' });
 
   const [accounts, cats, depts] = await Promise.all([ref('accounts'), ref('categories'), ref('departments')]);
@@ -252,7 +252,7 @@ async function movementDialog(fund, direction){
     { value:'TRANSFER', title:'Moved from another of our accounts', text:'e.g. this month’s contribution from the main account to the reserve account. Not income.' },
     { value:'EARMARK',  title:'Decision only — no money moved', text:'The committee sets money aside on paper; the fund will show as not yet funded.' }
   ];
-  let mode = isOut ? 'DIRECT' : 'TRANSFER';
+  let mode = presetMode || (isOut ? 'DIRECT' : 'TRANSFER');
   const directBox = el('div', {},
     field(isOut ? 'Paid from account' : 'Received into account', oneI),
     field('Category', catI, { hint:'Where it appears in the income & expense report. Add categories in Settings.' }),
@@ -276,9 +276,9 @@ async function movementDialog(fund, direction){
   sync();
 
   const res = await modal({
-    title: isOut ? `Take money out of ${fund.name}` : `Put money into ${fund.name}`,
+    title: title || (isOut ? `Take money out of ${fund.name}` : `Put money into ${fund.name}`),
     body: el('div', {},
-      el('div', { class:'grid g-form' }, field('Date', dateI, { required:true }), field('Amount', amtI, { required:true })),
+      el('div', { class:'grid g-form' }, field('Date', dateI, { required:true }), field(amountLabel || 'Amount', amtI, { required:true })),
       el('div', { class:'field' }, el('span', { text:'How did the money move?' }), radios),
       directBox, transferBox,
       field('Purpose', purpI, { hint:'Shown in the fund history and the monthly report.' }),

@@ -8,6 +8,7 @@ import { el, field, select, money, num, fdate, fdatetime, badge, table, stat,
          emptyState, ok, err, modal, reasonBox, confirmBox, downloadCSV } from '../core/ui.js';
 import { q, one, rpc, logEvent } from '../core/db.js';
 import { can, ref, state, invalidate } from '../core/store.js';
+import { accountSelect } from '../core/accounts.js';
 import { go, refresh } from '../core/router.js';
 
 const OPEN_STATES = ['OPEN','ASSIGNED','IN_PROGRESS'];
@@ -291,7 +292,7 @@ async function moveDialog(i, status, staff, vendors, accounts){
   const costI  = el('input', { type:'number', step:'0.01', min:'0', inputmode:'decimal',
                                value: i.actual_cost ?? '' });
   const resI   = el('textarea', { rows:2, placeholder:'What was actually done?' });
-  const acctI  = select(accounts.map(a => ({ value:a.id, label:a.name })), { placeholder:'Default cash account' });
+  const acctI  = accountSelect(accounts);
 
   const isDone = status === 'COMPLETED';
   const body = el('div', {},
