@@ -2336,6 +2336,40 @@ const run = async () => {
     check('a removal can be undone', /Mistake Tenant/.test(await page.locator('main table').first().innerText()));
   });
 
+  /* Reported: an LPG cylinder entered with the wrong date and amount. */
+  await section('correcting a wrong date or amount', async () => {
+    await signIn(page, 'admin@test');
+    const setup = await page.evaluate(async () => {
+      const db = await import('/core/db.js');
+      const fund = (await db.q('v_fund_balances', b => b.eq('code', 'LPG')))[0];
+      const cash = (await db.q('accounts', b => b.eq('code', 'CASH')))[0];
+      const cat = (await db.q('categories', b => b.eq('name', 'LPG cylinder bought from LPG fund')))[0];
+      const mv = await db.rpc('record_fund_movement', { p_fund: fund.fund_id, p_date: '2026-10-01', p_direction: 'WITHDRAWAL', p_amount: 1000,
+        p_cash_backed: true, p_from_account: cash.id, p_to_account: null, p_purpose: '1x45 cylinder', p_notes: null, p_category: cat.id, p_method: 'CASH', p_vendor: null });
+      const before = (await db.q('v_fund_balances', b => b.eq('code', 'LPG')))[0].current_balance;
+      return { txn: (Array.isArray(mv) ? mv[0] : mv).txn_id, before: Number(before) };
+    });
+    await gotoHash(page, '#/finance/' + setup.txn);
+    await page.waitForTimeout(800);
+    check('a posted entry offers "Correct date or amount"', await page.locator('main button:has-text("Correct date or amount")').count() === 1);
+    await page.click('main button:has-text("Correct date or amount")');
+    await page.waitForSelector('.modal');
+    await page.locator('.modal input[type=date]').fill(new Date().toISOString().slice(0, 10));
+    await page.locator('.modal input[type=number]').fill('900');
+    await page.locator('.modal input[type=text]').last().fill('Typed 1000 instead of 900');
+    await page.locator('.modal button:has-text("Correct it")').click();
+    await page.waitForTimeout(1800);
+    const after = await page.evaluate(async (id) => {
+      const db = await import('/core/db.js');
+      const old = (await db.q('transactions', b => b.eq('id', id)))[0];
+      const fund = (await db.q('v_fund_balances', b => b.eq('code', 'LPG')))[0];
+      return { old: old.status, hash: location.hash, fund: Number(fund.current_balance) };
+    }, setup.txn);
+    check('the wrong entry is kept as reversed', after.old === 'REVERSED');
+    check('and the page opens the corrected entry', after.hash !== '#/finance/' + setup.txn && /Tk 900/.test(await page.textContent('main')), after.hash);
+    check('the LPG fund now reflects the right price', after.fund === setup.before + 100, `${setup.before} → ${after.fund}`);
+  });
+
   /* ---------------- SYSTEM RESET ----------------
      Last, because it empties the database it runs against. The database
      rules are proved in sql/test/t07_reset.sql; what is checked here is

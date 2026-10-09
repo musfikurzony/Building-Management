@@ -427,6 +427,13 @@ async function detail(id){
     b.onclick = async () => { b.disabled = true; try { await rpc('submit_transaction', { p_txn:r.id }); ok('Resubmitted'); go('#/finance/'+r.id); } catch { b.disabled = false; } };
     btns.append(b);
   }
+  // A wrong date or amount: reverse and record again, as one step.
+  if (r.status === 'POSTED' && !r.reversed_by_txn_id && !r.is_reversal && can('finance','cancel') && can('finance','add')
+      && (!r.source_module || r.source_module === 'reserve')){
+    const c = el('button', { class:'btn primary', text:'Correct date or amount' });
+    c.onclick = () => correctDialog(r);
+    btns.append(c);
+  }
   if (r.status === 'POSTED' && !r.reversed_by_txn_id && can('finance','cancel')){
     const b = el('button', { class:'btn danger', text:'Reverse this entry' });
     b.onclick = async () => {
@@ -446,6 +453,43 @@ async function detail(id){
   }
   page.append(btns);
   return page;
+}
+
+/* Correcting a posted entry. It is never edited in place: the wrong one
+   is reversed (kept, marked REVERSED) and the right one recorded — one
+   step, so nothing is left half-done. An entry paid from a fund (an LPG
+   cylinder, say) is recorded again through the fund. */
+async function correctDialog(r){
+  const fund = r.source_module === 'reserve';
+  const desc = fund && String(r.description).includes(' — ') ? String(r.description).split(' — ').slice(1).join(' — ') : r.description;
+  const dateI = el('input', { type:'date', value: r.txn_date, required:true });
+  const amtI = el('input', { type:'number', step:'0.01', min:'0.01', inputmode:'decimal', value: r.amount, required:true });
+  const descI = el('input', { type:'text', maxlength:'200', value: desc || '' });
+  const whyI = el('input', { type:'text', maxlength:'200', placeholder:'e.g. Typed the wrong amount' });
+  const body = el('div', {},
+    el('p', { class:'muted small', text:'A posted entry is never changed in place. This keeps the wrong entry, marks it reversed, and records the right one — both stay in the books and the audit log, so the history is honest.' }),
+    el('div', { class:'grid g-form' }, field('Right date', dateI, { required:true }), field('Right amount', amtI, { required:true })),
+    field('Description', descI),
+    field('What was wrong', whyI, { hint:'Kept with both entries.' }),
+    fund ? el('p', { class:'hint', text:'This entry was paid from a fund; the fund is corrected too.' }) : null,
+    el('p', { class:'hint', text:'Receipts and photos stay with the old entry — attach them to the new one if needed.' }));
+  const res = await modal({ title:`Correct ${r.txn_no || 'this entry'}`, body, actions:[
+    { label:'Cancel', value:null },
+    { label:'Correct it', kind:'primary', value:true, validate: () => {
+        if (!dateI.value){ err('Choose the right date.'); return false; }
+        if (!(Number(amtI.value) > 0)){ err('Enter the right amount.'); return false; }
+        if (dateI.value === r.txn_date && Number(amtI.value) === Number(r.amount) && descI.value.trim() === String(desc || '').trim()){
+          err('Nothing has changed.'); return false; }
+        return true; } }]});
+  if (!res) return;
+  try {
+    const n = await rpc('correct_transaction', { p_txn: r.id, p_date: dateI.value, p_amount: Number(amtI.value),
+      p_description: descI.value.trim() || null, p_reason: whyI.value.trim() || null });
+    const row = Array.isArray(n) ? n[0] : n;
+    invalidate('balances');
+    ok(`Corrected. ${r.txn_no || 'The old entry'} is kept as reversed; the right entry is ${row?.txn_no || 'recorded'}.`);
+    go('#/finance/' + (row?.id || r.id));
+  } catch { /* toast */ }
 }
 
 function badgeNode(status){
