@@ -2297,6 +2297,45 @@ const run = async () => {
     await page.locator('.modal button:has-text("Cancel")').first().click();
   });
 
+  /* Reported: a tenant was added to the wrong flats while setting up, and
+     there was no way to remove a person. */
+  await section('removing a person entered by mistake', async () => {
+    await signIn(page, 'admin@test');
+    await page.evaluate(async () => {
+      const db = await import('/core/db.js');
+      const f = (await db.q('flats', b => b.eq('flat_number', 'A-103')))[0];
+      await db.rpc('set_flat_tenant', { p_flat: f.id, p_name: 'Mistake Tenant', p_billed: false });
+    });
+    await gotoHash(page, '#/flats/owners');
+    await page.waitForTimeout(700);
+    const row = page.locator('main tbody tr', { hasText: 'Mistake Tenant' });
+    check('each person has a Remove button', await row.locator('button:has-text("Remove")').count() === 1);
+    await row.locator('button:has-text("Remove")').click();
+    await page.waitForSelector('.modal .warn-box', { timeout: 5000 });
+    check('it says which flats they are still on', /A-103 \(tenant\)/.test(await page.textContent('.modal .warn-box')));
+    await page.locator('.modal input[type=text]').fill('Added by mistake');
+    await page.locator('.modal button:has-text("Remove")').last().click();
+    await page.waitForTimeout(500);
+    check('it will not remove them while they are on a flat unless told to', await page.isVisible('.modal .warn-box'));
+    await page.locator('.modal .warn-box input[type=checkbox]').check();
+    await page.locator('.modal button:has-text("Remove")').last().click();
+    await page.waitForTimeout(1500);
+    const st = await page.evaluate(async () => {
+      const db = await import('/core/db.js');
+      const o = (await db.q('owners', b => b.eq('name', 'Mistake Tenant')))[0];
+      const f = (await db.q('flats', b => b.eq('flat_number', 'A-103')))[0];
+      const ppl = (await db.q('v_flat_people', b => b.eq('flat_id', f.id)))[0];
+      return { active: o.is_active, reason: o.removed_reason, tenant: ppl.tenant_name };
+    });
+    check('the person is removed from the lists, with the reason kept', st.active === false && st.reason === 'Added by mistake', JSON.stringify(st));
+    check('and taken off the flat', st.tenant !== 'Mistake Tenant', st.tenant);
+    check('the list no longer shows them', !/Mistake Tenant/.test(await page.locator('main table').first().innerText()));
+    await page.click('main details.removed-people summary');
+    await page.locator('main details.removed-people tr', { hasText: 'Mistake Tenant' }).locator('button:has-text("Restore")').click();
+    await page.waitForTimeout(1200);
+    check('a removal can be undone', /Mistake Tenant/.test(await page.locator('main table').first().innerText()));
+  });
+
   /* ---------------- SYSTEM RESET ----------------
      Last, because it empties the database it runs against. The database
      rules are proved in sql/test/t07_reset.sql; what is checked here is

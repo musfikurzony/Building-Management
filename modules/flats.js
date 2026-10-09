@@ -563,6 +563,39 @@ async function moveOutDialog(flat, p){
 /** Edit a person's contact details. Which flat they belong to is changed
     on the flat's page, never here, so editing a phone number can never
     move a bill or end an ownership by accident. */
+/* Removing a person: hidden from every list and picker, kept in the
+   records (who owned, who paid), and restorable. Never erased — the
+   receipts and statements stand on that history. */
+async function removePersonDialog(person){
+  const [occ, flats] = await Promise.all([
+    q('flat_occupancy', b => b.eq('owner_id', person.id).is('to_date', null)).catch(() => []), ref('flats')]);
+  const flatNo = (id) => (flats.find(f => f.id === id) || {}).flat_number || '?';
+  const on = occ.map(o => `${flatNo(o.flat_id)} (${o.relation_type === 'TENANT' ? 'tenant' : 'owner'})`);
+  const takeI = el('input', { type:'checkbox' });
+  const whyI = el('input', { type:'text', maxlength:'200', placeholder:'e.g. Entered by mistake / placeholder used while setting up' });
+  const body = el('div', {},
+    el('p', {}, `${person.name} will be hidden from every list and picker. Past payments, receipts and who owned which flat are kept, and you can restore them later from the people list.`),
+    on.length ? el('div', { class:'warn-box' },
+      el('p', {}, el('b', { text:`Still on ${on.length} flat${on.length === 1 ? '' : 's'}: ` }), on.join(', ')),
+      el('label', { class:'check' }, takeI, el('span', {}, el('b', { text:'Take them off all these flats' }),
+        el('span', { class:'small muted', text:' — they were put there by mistake. The bill passes to the other person on the flat (owner or tenant), if any.' }))),
+      el('p', { class:'hint', text:'If a flat was really sold, or a tenant really moved out, use "Change owner" or "Moved out" on that flat instead, so its history stays right — then remove the person.' })) : null,
+    field('Why', whyI, { required:true }));
+  const res = await modal({ title:`Remove ${person.name}?`, body, actions:[
+    { label:'Cancel', value:null },
+    { label:'Remove', kind:'danger', value:true, validate: () => {
+        if (!whyI.value.trim()){ err('Say why, so the record explains itself.'); return false; }
+        if (on.length && !takeI.checked){ err('Tick "Take them off all these flats", or change those flats first.'); return false; }
+        return true; } }]});
+  if (!res) return;
+  try {
+    await rpc('remove_person', { p_person: person.id, p_reason: whyI.value.trim(), p_take_off_flats: takeI.checked });
+    invalidate('owners', 'flats');
+    ok(`${person.name} removed${on.length ? ` and taken off ${on.length} flat${on.length === 1 ? '' : 's'}` : ''}.`);
+    refresh();
+  } catch { /* toast */ }
+}
+
 async function personDialog(personId){
   const person = personId ? await one('owners', b => b.eq('id', personId)) : null;
   const nameI = el('input', { type:'text', required:true, maxlength:'120', value: person?.name || '' });
@@ -596,11 +629,13 @@ async function personDialog(personId){
     person ? null : linkBox);
 
   const res = await modal({ title: person ? `Edit ${person.name}` : 'Add a person', body, actions:[
+    ...(person && can('flats','edit') ? [{ label:'Remove person…', kind:'danger', value:'remove' }] : []),
     { label:'Cancel', value:null },
     { label:'Save', kind:'primary', value:true,
       validate: () => { if (!nameI.value.trim()){ err('A name is required.'); return false; } return true; } }
   ]});
   if (!res) return;
+  if (res === 'remove') return removePersonDialog(person);
 
   const payload = { name: nameI.value.trim(), mobile: mob.input.value.trim() || null,
                     email: mailI.value.trim() || null, alt_contact: altI.value.trim() || null,
@@ -641,9 +676,12 @@ async function peopleView(){
     { label:'Mobile', fmt: o => o.mobile || '—', csv: o => o.mobile },
     { label:'Email', fmt: o => o.email || '—', csv: o => o.email },
     { label:'', fmt: o => can('flats','edit')
-        ? el('button', { class:'btn small', text:'Edit', onclick: (e) => { e.stopPropagation(); personDialog(o.id); } })
+        ? el('span', { class:'row-acts' },
+            el('button', { class:'btn small', text:'Edit', onclick: (e) => { e.stopPropagation(); personDialog(o.id); } }),
+            el('button', { class:'btn small', text:'Remove', onclick: (e) => { e.stopPropagation(); removePersonDialog(o); } }))
         : '' }
   ];
+  const removed = people.filter(p => p.removed_at && !p.merged_into);
 
   const bar = el('div', { class:'toolbar' }, el('a', { class:'btn', href:'#/flats', text:'← Flats' }));
   if (can('flats','add'))
@@ -661,7 +699,17 @@ async function peopleView(){
       el('h1', { text:'Owners & tenants' }),
       el('p', { class:'sub', text:'Everyone on file. To put someone into a flat as its owner or tenant, open the flat.' })),
     bar,
-    table(cols, shown, { empty:'Nobody recorded yet. Open a flat and add its owner.' }));
+    table(cols, shown, { empty:'Nobody recorded yet. Open a flat and add its owner.' }),
+    removed.length ? el('details', { class:'card removed-people' },
+      el('summary', { text:`Removed people (${removed.length})` }),
+      table([
+        { label:'Name', primary:true, key:'name' },
+        { label:'Removed', fmt: o => fdate(String(o.removed_at).slice(0, 10)) },
+        { label:'Why', fmt: o => o.removed_reason || '—' },
+        { label:'', fmt: o => can('flats','edit') ? el('button', { class:'btn small', text:'Restore', onclick: async () => {
+            try { await rpc('restore_person', { p_person: o.id }); invalidate('owners'); ok(`${o.name} is back on the list. Put them on a flat from the flat\u2019s page.`); refresh(); } catch {}
+          } }) : '' }
+      ], removed)) : null);
 }
 
 /* ==================================================================

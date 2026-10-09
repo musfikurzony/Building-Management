@@ -701,3 +701,8 @@ label.btn.disabled{opacity:.55;pointer-events:none}
 .who-line{display:flex;align-items:center;gap:.4rem;flex-wrap:wrap}
 .who-role{font-size:.72rem;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);min-width:3.4rem}
 .who-line.pays > span:nth-child(2){font-weight:600}
+/* ---- v14: removing a person ---- */
+.warn-box{border:1px solid var(--amber);background:var(--amber-soft);border-radius:var(--radius);padding:.6rem .8rem;margin:.6rem 0}
+.warn-box p{margin:.2rem 0}
+.removed-people{margin-top:1rem}
+.removed-people summary{cursor:pointer;font-weight:600;min-height:var(--tap);display:flex;align-items:center}
