@@ -136,3 +136,27 @@ SELECT t.eq('all three count since the last payment', 3::bigint,
 SELECT t.throws('an unknown channel is still refused', $$
   SELECT bms.log_charge_reminder(t.uid('a101'), 'CARRIER_PIGEON', 'GENTLE', 'en', 'x') $$, 'Unknown channel');
 RESET ROLE;
+
+-- ---------------------------------------------------------------------
+-- 094: removing a person from the lists — kept on record, never erased.
+-- ---------------------------------------------------------------------
+SET ROLE authenticated;
+SELECT set_config('request.jwt.claim.sub', t.recall('admin'), false);
+SELECT bms.set_flat_owner(t.uid('a103'), NULL, 'Placeholder Owner', NULL, NULL, NULL, CURRENT_DATE - 10);
+SELECT t.remember('ph', (SELECT id::text FROM bms.owners WHERE name = 'Placeholder Owner'));
+SELECT t.throws('a reason is needed', $$ SELECT bms.remove_person(t.uid('ph'), ' ') $$, 'Say why');
+SELECT t.throws('someone still on a flat is not removed by accident', $$
+  SELECT bms.remove_person(t.uid('ph'), 'Placeholder') $$, 'still on A-103');
+SELECT t.runs('with "take off all their flats" they are removed', $$
+  SELECT bms.remove_person(t.uid('ph'), 'Placeholder used while setting up', true) $$);
+SELECT t.ok('they are off the flat', (SELECT owner_id IS DISTINCT FROM t.uid('ph') FROM bms.v_flat_people WHERE flat_id = t.uid('a103')));
+SELECT t.ok('and hidden from the lists, but still on record',
+  (SELECT NOT is_active AND removed_reason = 'Placeholder used while setting up' FROM bms.owners WHERE id = t.uid('ph')));
+SELECT t.eq('the removal is in the audit log', 1::bigint,
+  (SELECT COUNT(*) FROM bms.audit_log WHERE entity_id = t.uid('ph') AND severity = 'HIGH' AND detail LIKE 'Removed Placeholder Owner%'));
+SELECT t.throws('they cannot be removed twice', $$ SELECT bms.remove_person(t.uid('ph'), 'Again') $$, 'already been removed');
+SELECT t.runs('a removal can be undone', $$ SELECT bms.restore_person(t.uid('ph')) $$);
+SELECT t.ok('they are back on the lists', (SELECT is_active AND removed_at IS NULL FROM bms.owners WHERE id = t.uid('ph')));
+SELECT set_config('request.jwt.claim.sub', t.recall('committee'), false);
+SELECT t.throws('a committee member cannot remove people', $$ SELECT bms.remove_person(t.uid('ph'), 'x') $$, 'permission denied');
+RESET ROLE;

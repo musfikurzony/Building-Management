@@ -109,6 +109,8 @@ const MIGRATION_OF = {
   void_occupancy:        '091_people_fixes.sql',
   correct_occupant:      '091_people_fixes.sql',
   possible_duplicate_people: '091_people_fixes.sql',
+  remove_person:         '094_remove_person.sql',
+  restore_person:        '094_remove_person.sql',
   record_group_payment:  '089_owners_bills.sql',
   reverse_group_payment: '089_owners_bills.sql',
   v_payment_groups:      '089_owners_bills.sql',
