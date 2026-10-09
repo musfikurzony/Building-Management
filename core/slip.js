@@ -53,7 +53,7 @@ function printImage(blob){
 export async function slipPreview(o){
   let blob;
   try { blob = await o.draw(); } catch (e){ return err('Could not draw the slip: ' + (e.message || e)); }
-  const url = URL.createObjectURL(blob);
+  let url = URL.createObjectURL(blob);
   const sent = (ch) => { try { o.onSent && o.onSent(ch); } catch {} };
   const busy = (btn, fn) => async (ev) => {
     if (btn.disabled) return;
@@ -91,8 +91,19 @@ export async function slipPreview(o){
   pr.onclick = () => { printImage(blob); sent('PRINT'); };
   btns.push(dl, pdf, pr);
 
+  const imgEl = el('img', { src: url, alt: o.title || 'Slip', class:'slip-img' });
+  // Controls above the picture (a due-date choice, say) redraw it in place;
+  // every button then sends the picture as it now looks.
+  const redraw = async () => {
+    try {
+      blob = await o.draw();
+      URL.revokeObjectURL(url); url = URL.createObjectURL(blob); imgEl.src = url;
+    } catch (e){ err('Could not draw the slip: ' + (e.message || e)); }
+  };
+  if (o.bindRedraw) o.bindRedraw(redraw);
   const body = el('div', { class:'slip-preview' },
-    el('div', { class:'slip-frame' }, el('img', { src: url, alt: o.title || 'Slip', class:'slip-img' })),
+    o.controls || null,
+    el('div', { class:'slip-frame' }, imgEl),
     o.note ? el('p', { class:'small muted', text: o.note }) : null,
     el('div', { class:'btn-row slip-actions' }, btns),
     // WhatsApp lets a link open one person's chat with TEXT, but a picture

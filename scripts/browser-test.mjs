@@ -2213,6 +2213,14 @@ const run = async () => {
       return n;
     });
     check('a flat\u2019s DUE slip carries the red DUE seal', red > 400, String(red));
+    const dueSel = page.locator('.modal label.field:has-text("Due date on this slip") select');
+    check('the DUE slip offers the due day, a week, a chosen date, or none', await dueSel.locator('option').count() === 4);
+    const src0 = await page.getAttribute('.modal .slip-preview img', 'src');
+    await dueSel.selectOption('NONE');
+    await page.waitForFunction((s0) => document.querySelector('.modal .slip-preview img')?.getAttribute('src') !== s0, src0, { timeout: 5000 }).catch(() => {});
+    check('choosing "No due date" redraws the slip', (await page.getAttribute('.modal .slip-preview img', 'src')) !== src0);
+    await dueSel.selectOption('DAY');
+    await page.waitForTimeout(500);
     await Promise.all([page.waitForEvent('download', { timeout: 15000 }), page.click('.modal .slip-actions button:has-text("Download picture")')]);
     await page.waitForTimeout(1200);
     const after = await page.evaluate(async () => (await (await import('/core/db.js')).q('charge_reminders', b => b.in('channel', ['IMAGE','PDF','PRINT']))).length);
@@ -2274,6 +2282,19 @@ const run = async () => {
     const want = `${['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][M - 1]} ${Y}`;
     check('the service charge page opens on the running month, not the one billed ahead', h.startsWith(want), h);
     check('and marks next month as billed ahead', /billed ahead, not due yet/.test(await page.textContent('main')));
+    // Requested: owner and tenant names on this page, to find the person and record the payment there.
+    const grid = page.locator('main section:has(h2:has-text("flat by flat"))');
+    check('the month shows each flat\u2019s owner and tenant', /Rahim Uddin/.test(await grid.innerText()) && /Karim Tenant/.test(await grid.innerText()));
+    await grid.locator('input[type=search]').fill('karim tenant');
+    await page.waitForTimeout(300);
+    const found = await grid.locator('tbody tr').count();
+    check('a tenant can be found by name', found === 1 && /Z-901/.test(await grid.locator('tbody tr').first().innerText()), String(found));
+    const payBtn = grid.locator('tbody tr').first().locator('button:has-text("Pay")');
+    check('with a Pay button right there', await payBtn.count() === 1);
+    await payBtn.click();
+    await page.waitForSelector('.modal', { timeout: 5000 });
+    check('Pay opens the payment form for that flat', /Z-901/.test(await page.textContent('.modal')));
+    await page.locator('.modal button:has-text("Cancel")').first().click();
   });
 
   /* ---------------- SYSTEM RESET ----------------

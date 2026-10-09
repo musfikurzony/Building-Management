@@ -222,23 +222,53 @@ export async function reminderDialog(flatId){
   const canSend = !!ctx.can_send && can('charges','add');
   // The DUE slip: the same reminder as a stamped picture, PDF or print.
   const slip = el('button', { class:'btn', type:'button', text:'DUE slip — preview & send' });
-  const drawDue = () => receiptImage({
+  // The date on the slip: the month's due day (normally the 10th) while it
+  // is still ahead, a week from today, a date of your choosing, or none at
+  // all. Remembered per flat on this device.
+  const iso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const dueDayDate = new Date(today.getFullYear(), today.getMonth(), Math.min(Number(settings().charge_due_day || 10), 28));
+  const dayAhead = dueDayDate >= today;
+  const key = `bms.slipDue.${flatId}`;
+  let saved = null; try { saved = JSON.parse(localStorage.getItem(key) || 'null'); } catch {}
+  const dueI = select([
+    { value:'DAY',  label: `By the ${settings().charge_due_day || 10}th — ${fdate(iso(dueDayDate))}${dayAhead ? '' : ' (already passed)'}` },
+    { value:'WEEK', label: `In a week — ${fdate(ctx.deadline_date || iso(new Date(today.getTime() + 7 * 864e5)))}` },
+    { value:'DATE', label: 'A date I choose' },
+    { value:'NONE', label: 'No due date' }], { value: saved?.mode || (dayAhead ? 'DAY' : 'WEEK') });
+  const dateI = el('input', { type:'date', value: saved?.date || iso(dueDayDate) });
+  const dateBox = field('Pay by', dateI);
+  const slipDue = () => dueI.value === 'NONE' ? null : dueI.value === 'DAY' ? iso(dueDayDate)
+                      : dueI.value === 'WEEK' ? (ctx.deadline_date || iso(new Date(today.getTime() + 7 * 864e5))) : (dateI.value || null);
+  const role = ctx.relation === 'TENANT' ? 'Tenant' : ctx.relation === 'OWNER' ? 'Owner' : '';
+  const drawDue = () => { const due = slipDue(); return receiptImage({
     building: ctx.building_name || 'Building', address: settings().address || '',
-    title: 'Service charge due', noLabel: 'Date', receiptNo: fdate(new Date().toISOString().slice(0, 10)),
-    flat: ctx.flat_number || '', from: ctx.recipient_name || '', fromLabel: 'Bill to',
+    title: 'Service charge due', noLabel: 'Date', receiptNo: fdate(iso(today)),
+    flat: ctx.flat_number || '', from: ctx.recipient_name ? `${ctx.recipient_name}${role ? ` (${role})` : ''}` : '', fromLabel: 'Bill to',
     lines: (ctx.months || []).map(m => ({ label: m.source === 'OPENING' ? 'Earlier balance' : monthLabel(m.year, m.month, 'en'),
                                           value: money(m.due, { bare:true }) })),
     amountLabel: 'Total due', amount: money(ctx.outstanding),
-    note: ctx.deadline_date ? `Please pay by ${fdate(ctx.deadline_date)}` : 'Please pay at your earliest convenience',
+    note: due ? `Please pay by ${fdate(due)}` : 'Kindly pay at your convenience',
     footer: ctx.how_to_pay ? String(ctx.how_to_pay).slice(0, 70) : 'Thank you.',
-    seal: { text:'DUE', sub: ctx.deadline_date ? `By ${fdate(ctx.deadline_date)}` : 'Unpaid', top: ctx.building_name || '', color:'red' } });
-  slip.onclick = () => slipPreview({
-    title: `DUE slip — flat ${ctx.flat_number}`, draw: drawDue,
-    fileBase: `due-${ctx.flat_number}-${new Date().toISOString().slice(0, 10)}`,
-    shareText: `${ctx.building_name || ''} — service charge due, flat ${ctx.flat_number}`,
-    digits: ctx.mobile_wa, text: text.value, toName: ctx.recipient_name,
-    note: ctx.recipient_name ? `Goes to ${ctx.recipient_name}${ctx.mobile ? ' · ' + ctx.mobile : ''}.` : null,
-    onSent: (ch) => record(ch === 'DOWNLOAD' ? 'IMAGE' : ch) });
+    seal: { text:'DUE', sub: due ? `By ${fdate(due)}` : (ctx.months?.length ? monthLabel(ctx.months[ctx.months.length - 1].year, ctx.months[ctx.months.length - 1].month, 'en') : ''),
+            top: ctx.building_name || '', color:'red' } }); };
+  slip.onclick = () => {
+    const controls = el('div', { class:'grid g-form slip-controls' }, field('Due date on this slip', dueI), dateBox);
+    const sync = (redraw) => () => {
+      dateBox.hidden = dueI.value !== 'DATE';
+      try { localStorage.setItem(key, JSON.stringify({ mode: dueI.value, date: dateI.value })); } catch {}
+      redraw && redraw();
+    };
+    dateBox.hidden = dueI.value !== 'DATE';
+    return slipPreview({
+      title: `DUE slip — flat ${ctx.flat_number}`, draw: drawDue, controls,
+      bindRedraw: (redraw) => { dueI.onchange = sync(redraw); dateI.onchange = sync(redraw); },
+      fileBase: `due-${ctx.flat_number}-${iso(today)}`,
+      shareText: `${ctx.building_name || ''} — service charge due, flat ${ctx.flat_number}`,
+      digits: ctx.mobile_wa, text: text.value, toName: ctx.recipient_name,
+      note: ctx.recipient_name ? `Goes to ${ctx.recipient_name}${role ? ` (${role})` : ''}${ctx.mobile ? ' · ' + ctx.mobile : ''}.` : null,
+      onSent: (ch) => record(ch === 'DOWNLOAD' ? 'IMAGE' : ch) });
+  };
   const actions = el('div', { class:'btn-row' }, wa, sms, slip, copy);
   const note = el('p', { class:'hint', text: canSend
     ? 'Sending records this reminder against the flat — who, when, to which number, and these exact words.'

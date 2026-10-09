@@ -100,26 +100,68 @@ async function monthsView(){
 }
 
 async function monthGrid(y, m){
-  const [rows, sums] = await Promise.all([
+  const [rows, sums, ppl] = await Promise.all([
     q('v_flat_charges', b => b.eq('period_year', y).eq('period_month', m).order('flat_number')),
-    reminderSummaries()]);
+    reminderSummaries(),
+    q('v_flat_people', b => b, { silent:true }).catch(() => [])]);
+  // Who owns each flat, who lives there, and which of them pays — so the
+  // person in front of you can be found by name, not only by flat number.
+  const who = new Map(ppl.map(p => [p.flat_id, p]));
+  const nameCell = (r) => {
+    const p = who.get(r.flat_id) || {};
+    if (!p.owner_name && !p.tenant_name) return el('span', { class:'muted', text:'nobody recorded' });
+    const line = (role, name, pays) => name ? el('div', { class:'who-line' + (pays ? ' pays' : '') },
+      el('span', { class:'who-role', text: role }), el('span', { text: name }),
+      pays ? el('span', { class:'badge b-active', text:'pays' }) : null) : null;
+    return el('div', { class:'who-cell' },
+      line('Owner', p.owner_name, p.billed_relation === 'OWNER'),
+      line('Tenant', p.tenant_name, p.billed_relation === 'TENANT'));
+  };
+  const payer = (r) => { const p = who.get(r.flat_id) || {}; return p.billed_relation === 'TENANT' ? p.tenant_name : p.owner_name; };
   const cols = [
     { label:'Flat', primary:true, key:'flat_number' },
-    { label:'Charge', cls:'num', fmt: r => money(r.charge_amount, { bare:true }), csv: r => r.charge_amount },
-    { label:'Waived', cls:'num', fmt: r => Number(r.waiver_amount) ? money(r.waiver_amount, { bare:true }) : '—', csv: r => r.waiver_amount },
-    { label:'Payable', cls:'num', fmt: r => money(r.net_payable, { bare:true }), csv: r => r.net_payable },
+    { label:'Owner / tenant', fmt: nameCell, csv: r => [who.get(r.flat_id)?.owner_name, who.get(r.flat_id)?.tenant_name].filter(Boolean).join(' / ') },
+    { label:'Payable', cls:'num', fmt: r => money(r.net_payable, { bare:true }) + (Number(r.waiver_amount) ? ' *' : ''), csv: r => r.net_payable },
     { label:'Paid', cls:'num', fmt: r => money(r.paid_amount, { bare:true }), csv: r => r.paid_amount },
     { label:'Due', cls:'num', fmt: r => money(r.due_amount, { bare:true }), csv: r => r.due_amount },
     { label:'Status', fmt: r => r.not_due_yet && r.status === 'UNPAID' ? el('span', { class:'badge b-draft', text:'not due yet' }) : badge(r.status),
       csv: r => r.not_due_yet && r.status === 'UNPAID' ? 'NOT_DUE_YET' : r.status },
     { label:'Reminded', fmt: r => reminderCell(sums.get(r.flat_id)), csv: r => sums.get(r.flat_id)?.since ?? 0 },
-    { label:'', fmt: r => Number(r.due_amount) > 0 && !r.not_due_yet ? (remindButton(r.flat_id) || '') : '', csv: () => null }
+    { label:'', fmt: r => {
+        const acts = el('span', { class:'row-acts' });
+        if (Number(r.due_amount) > 0 && can('charges','add'))
+          acts.append(el('button', { class:'btn small primary', type:'button', text:'Pay',
+            title: payer(r) ? `Record a payment from ${payer(r)}` : 'Record a payment',
+            onclick: async (e) => { e.stopPropagation(); const res = await paymentDialog(r.flat_id); if (res) refresh(); } }));
+        if (Number(r.due_amount) > 0 && !r.not_due_yet){ const rb = remindButton(r.flat_id); if (rb) acts.append(rb); }
+        return acts;
+      }, csv: () => null }
   ];
+
+  // Find someone quickly: by flat, owner or tenant; and show only who owes.
+  const search = el('input', { type:'search', placeholder:'Find a flat, owner or tenant…', 'aria-label':'Find a flat, owner or tenant' });
+  let only = 'ALL';
+  const chips = el('div', { class:'chip-row' });
+  const host = el('div', {});
+  const owes = (r) => Number(r.due_amount) > 0;
+  const paintChips = () => chips.replaceChildren(...[['ALL', `All (${rows.length})`], ['DUE', `Owing (${rows.filter(owes).length})`],
+      ['PAID', `Paid (${rows.filter(r => !owes(r)).length})`]].map(([k, l]) =>
+    el('button', { type:'button', class:'filter-chip' + (only === k ? ' on' : ''), 'aria-pressed': String(only === k), text: l,
+      onclick: () => { only = k; paintChips(); paint(); } })));
+  const paint = () => {
+    const t = search.value.trim().toLowerCase();
+    const list = rows.filter(r => (only === 'ALL' || (only === 'DUE' ? owes(r) : !owes(r))) &&
+      (!t || [r.flat_number, who.get(r.flat_id)?.owner_name, who.get(r.flat_id)?.tenant_name].some(x => String(x || '').toLowerCase().includes(t))));
+    host.replaceChildren(table(cols, list, { onRow: r => go('#/charges/flat/' + r.flat_id), empty: 'Nobody matches.' }),
+      rows.some(r => Number(r.waiver_amount)) ? el('p', { class:'hint', text:'* part of the charge was waived.' }) : null);
+  };
+  search.oninput = paint;
+  paintChips(); paint();
   return el('section', { class:'card' },
     el('div', { class:'card-head' }, el('h2', { text:`${monthName(y,m)} — flat by flat` }),
       can('charges','export') ? el('button', { class:'btn small', text:'CSV',
         onclick: () => downloadCSV(`charges-${y}-${String(m).padStart(2,'0')}.csv`, cols.slice(0, -1), rows) }) : null),
-    table(cols, rows, { onRow: r => go('#/charges/flat/' + r.flat_id) }));
+    el('div', { class:'toolbar' }, el('div', { class:'grow' }, search)), chips, host);
 }
 
 /* ==================================================================
