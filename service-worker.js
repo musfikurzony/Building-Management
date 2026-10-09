@@ -2,7 +2,7 @@
    with a bad connection. Supabase calls are never cached: a balance
    must always be the live one. */
 
-const CACHE = 'bms-shell-v25';
+const CACHE = 'bms-shell-v26';
 const SHELL = [
   './', './index.html', './manifest.json', './config.js',
   './assets/app.css', './assets/icon.svg', './vendor/supabase.js',
