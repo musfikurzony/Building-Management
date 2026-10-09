@@ -696,3 +696,8 @@ label.btn.disabled{opacity:.55;pointer-events:none}
   body.printing-slip #slipPrint img{width:90mm;height:auto}
 }
 .bill-lines td:first-child{white-space:nowrap}
+/* ---- v13: owner / tenant on the month grid ---- */
+.who-cell{display:flex;flex-direction:column;gap:.15rem;min-width:0}
+.who-line{display:flex;align-items:center;gap:.4rem;flex-wrap:wrap}
+.who-role{font-size:.72rem;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);min-width:3.4rem}
+.who-line.pays > span:nth-child(2){font-weight:600}
