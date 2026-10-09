@@ -236,7 +236,7 @@ export async function reminderDialog(flatId){
     title: `DUE slip — flat ${ctx.flat_number}`, draw: drawDue,
     fileBase: `due-${ctx.flat_number}-${new Date().toISOString().slice(0, 10)}`,
     shareText: `${ctx.building_name || ''} — service charge due, flat ${ctx.flat_number}`,
-    digits: ctx.mobile_wa, text: text.value,
+    digits: ctx.mobile_wa, text: text.value, toName: ctx.recipient_name,
     note: ctx.recipient_name ? `Goes to ${ctx.recipient_name}${ctx.mobile ? ' · ' + ctx.mobile : ''}.` : null,
     onSent: (ch) => record(ch === 'DOWNLOAD' ? 'IMAGE' : ch) });
   const actions = el('div', { class:'btn-row' }, wa, sms, slip, copy);

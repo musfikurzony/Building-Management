@@ -47,7 +47,21 @@ async function receiptData(paymentId){
   if (d.billed_mobile){
     try { digits = await rpc('normalize_mobile', { p: d.billed_mobile }, { silent: true }); } catch {}
   }
-  return { p, flat, lines, advance, to: d.billed_to || p.payer_name || '', mobile: d.billed_mobile || '', digits };
+  // Who paid, and as what: the owner or the tenant of this flat.
+  const ppl = (await q('v_flat_people', b => b.eq('flat_id', p.flat_id), { silent:true }).catch(() => []))[0] || {};
+  const payer = p.payer_name || d.billed_to || '';
+  const role = roleOf(payer, ppl);
+  return { p, flat, lines, advance, to: d.billed_to || p.payer_name || '', mobile: d.billed_mobile || '', digits,
+           payer, role, payerLabel: role ? `${payer} (${role})` : payer };
+}
+
+const norm = (x) => String(x || '').trim().replace(/\s+/g, ' ').toLowerCase();
+/** "Owner" or "Tenant" when the name is the flat's current owner or tenant. */
+function roleOf(name, ppl){
+  if (!norm(name)) return '';
+  if (norm(name) === norm(ppl.owner_name)) return 'Owner';
+  if (norm(name) === norm(ppl.tenant_name)) return 'Tenant';
+  return '';
 }
 
 /** The picture, with every field the on-screen receipt has. */
@@ -60,7 +74,7 @@ async function drawReceipt(r){
     receiptNo: r.p.receipt_no,
     date:      fdate(r.p.payment_date),
     flat:      r.flat.flat_number || '',
-    from:      r.p.payer_name || '',
+    from:      r.payerLabel || '',
     method:    methodName(r.p.method),
     reference: r.p.reference_no || '',
     amount:    money(r.p.amount),
@@ -78,6 +92,7 @@ function receiptText(r){
     `${s.building_name || 'Building'} — service charge receipt`,
     `Receipt: ${r.p.receipt_no}`,
     `Flat: ${r.flat.flat_number || ''}`,
+    r.payer ? `Received from: ${r.payerLabel}` : null,
     `Date: ${fdate(r.p.payment_date)}`,
     `Amount received: ${money(r.p.amount)}`,
     r.lines.length ? `For: ${r.lines.map(l => l.label).join(', ')}` : null,
@@ -108,8 +123,8 @@ export async function receiptDialog(paymentId){
       el('dt', { text:'Receipt no' }), el('dd', { class:'mono', text: p.receipt_no }),
       el('dt', { text:'Date' }),       el('dd', { text: fdate(p.payment_date) }),
       el('dt', { text:'Flat' }),       el('dd', { text: r.flat.flat_number || '' }),
-      p.payer_name ? el('dt', { text:'Received from' }) : null,
-      p.payer_name ? el('dd', { text: p.payer_name }) : null,
+      r.payer ? el('dt', { text:'Received from' }) : null,
+      r.payer ? el('dd', { text: r.payerLabel }) : null,
       el('dt', { text:'Received' }),   el('dd', { class:'num', style:'font-weight:700', text: money(p.amount) }),
       el('dt', { text:'Method' }),     el('dd', { text: methodName(p.method) }),
       p.reference_no ? el('dt', { text:'Reference' }) : null,
@@ -134,7 +149,7 @@ export async function receiptDialog(paymentId){
   const previewBtn = el('button', { class:'btn primary', type:'button', text:'Preview & send' });
   previewBtn.onclick = () => slipPreview({
     title: `Receipt ${p.receipt_no} — PAID`, draw: () => drawReceipt(r), fileBase, shareText,
-    digits: r.digits, text: receiptText(r),
+    digits: r.digits, text: receiptText(r), toName: r.to,
     note: r.to ? `Goes to ${r.to}${r.mobile ? ' · ' + r.mobile : ''}.` : null,
     onSent: (ch) => note(`sent (${ch.toLowerCase()}) from the preview`) });
 
@@ -244,6 +259,10 @@ export async function groupReceiptDialog(groupId){
     const allocated = months.reduce((t, m) => t + m.amount, 0);
     return { p, flat: flatNo(p.flat_id), months, advance: p.status === 'ACTIVE' ? Number(p.amount) - allocated : 0 };
   }));
+  // The payer's role: owner of these flats, or the tenant who pays them.
+  const gp = g.payer_owner_id ? await q('v_flat_people', b => b.in('flat_id', pays.map(x => x.flat_id)), { silent:true }).catch(() => []) : [];
+  const gRole = gp.some(x => x.owner_id === g.payer_owner_id) ? 'Owner' : gp.some(x => x.tenant_id === g.payer_owner_id) ? 'Tenant' : '';
+  const gPayer = g.payer_name ? (gRole ? `${g.payer_name} (${gRole})` : g.payer_name) : '';
   const reversed = g.status === 'REVERSED';
   const advanceTotal = parts.reduce((t, x) => t + Math.max(0, x.advance), 0);
 
@@ -258,7 +277,7 @@ export async function groupReceiptDialog(groupId){
     el('dl', { class:'dl' },
       el('dt', { text:'Receipt no' }), el('dd', { class:'mono', text: g.group_no }),
       el('dt', { text:'Date' }), el('dd', { text: fdate(g.payment_date) }),
-      el('dt', { text:'Received from' }), el('dd', { text: g.payer_name || '' }),
+      el('dt', { text:'Received from' }), el('dd', { text: gPayer }),
       el('dt', { text:'Flats' }), el('dd', { text: g.flat_list || '' }),
       el('dt', { text:'Received' }), el('dd', { class:'num', style:'font-weight:700', text: money(g.total_amount) }),
       el('dt', { text:'Method' }), el('dd', { text: String(g.method).replace(/_/g, ' ') }),
@@ -275,7 +294,7 @@ export async function groupReceiptDialog(groupId){
     building: s.building_name || 'Building', address: s.address || '',
     title: 'Service charge receipt — several flats',
     receiptNo: g.group_no, date: fdate(g.payment_date), flat: g.flat_list || '',
-    from: g.payer_name || '', method: String(g.method).replace(/_/g, ' '), reference: g.reference_no || '',
+    from: gPayer, method: String(g.method).replace(/_/g, ' '), reference: g.reference_no || '',
     amount: money(g.total_amount),
     advance: advanceTotal > 0.001 ? `Kept as advance: ${money(advanceTotal)}` : '',
     lines: parts.flatMap(x => x.months.length
@@ -311,7 +330,7 @@ export async function groupReceiptDialog(groupId){
     window.addEventListener('afterprint', done); window.print(); setTimeout(done, 1500); } });
 
   const previewBtn = el('button', { class:'btn primary', type:'button', text:'Preview & send', onclick: () => slipPreview({
-    title:`Receipt ${g.group_no} — PAID`, draw, fileBase, shareText, digits, text,
+    title:`Receipt ${g.group_no} — PAID`, draw, fileBase, shareText, digits, text, toName: g.payer_name,
     note: `Goes to ${g.payer_name || 'the payer'}.`, onSent: (ch) => note(`sent (${ch.toLowerCase()}) from the preview`) }) });
   imgBtn.classList.remove('primary');
   const actions = el('div', { class:'btn-row receipt-actions' });

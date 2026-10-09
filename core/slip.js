@@ -61,7 +61,7 @@ export async function slipPreview(o){
     try { await fn(ev); } catch (e){ err(e.message || String(e)); } finally { btn.disabled = false; }
   };
 
-  const pic = el('button', { class:'btn primary', type:'button', text:'Send picture' });
+  const pic = el('button', { class:'btn primary', type:'button', text:'Share picture' });
   pic.onclick = busy(pic, async () => {
     const how = await shareFile(blob, `${o.fileBase}.png`, 'image/png', o.shareText || '');
     if (how === 'shared'){ ok('Sent.'); sent('IMAGE'); }
@@ -69,7 +69,8 @@ export async function slipPreview(o){
   });
   const btns = [pic];
   if (o.text){
-    const wa = el('a', { class:'btn', text: o.digits ? 'WhatsApp message' : 'WhatsApp (choose contact)' });
+    const first = String(o.toName || '').trim().split(/\s+/).filter(w => !/^(md|mohammad|muhammad|mr|mrs|haji|alhaj)\.?$/i.test(w))[0] || '';
+    const wa = el('a', { class:'btn', text: o.digits ? `Open ${first || 'their'} chat on WhatsApp` : 'WhatsApp (choose contact)' });
     wireWhatsAppLink(wa, o.digits, o.text);
     wa.addEventListener('click', () => sent('WHATSAPP'));
     btns.push(wa);
@@ -93,7 +94,13 @@ export async function slipPreview(o){
   const body = el('div', { class:'slip-preview' },
     el('div', { class:'slip-frame' }, el('img', { src: url, alt: o.title || 'Slip', class:'slip-img' })),
     o.note ? el('p', { class:'small muted', text: o.note }) : null,
-    el('div', { class:'btn-row slip-actions' }, btns));
+    el('div', { class:'btn-row slip-actions' }, btns),
+    // WhatsApp lets a link open one person's chat with TEXT, but a picture
+    // can only be handed to WhatsApp through the phone's share menu, which
+    // always asks for the chat. Say so, and give the two-tap way round it.
+    o.digits && o.text ? el('p', { class:'hint', text:
+      'Share picture hands the picture to WhatsApp, which then asks you to pick the chat — WhatsApp does not let any app choose the person for a picture. ' +
+      'To go straight to the right person: tap "Download picture", then "Open … chat on WhatsApp" — the bill text is already written — and attach the picture from your gallery.' }) : null);
   const res = await modal({ title: o.title || 'Preview', body, actions:[{ label:'Close', value:null }] });
   URL.revokeObjectURL(url);
   return res;

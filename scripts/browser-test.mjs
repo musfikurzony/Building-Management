@@ -1984,6 +1984,18 @@ const run = async () => {
     check('the total', /Total payable: Tk 7,000/.test(bill));
     check('and the due day', /Please pay by \d+ \w+ \d{4}/.test(bill) || /Please pay by/.test(bill));
     check('the bill can be previewed as a stamped DUE slip', await page.locator('.modal button:has-text("Preview & send")').count() === 1);
+    check('the bill says who it is for and as what', /Haji Land \(Owner\)/.test(await page.textContent('.modal .rem-who')));
+    await page.locator('.modal label.field:has-text("Due date on this bill") select').selectOption('NONE');
+    await page.waitForTimeout(300);
+    const noDate = await page.inputValue('.modal .rem-text');
+    check('a bill can go without a due date', !/Please pay by/.test(noDate) && /Total payable: Tk 7,000/.test(noDate), noDate.slice(0, 220));
+    await page.locator('.modal label.field:has-text("Due date on this bill") select').selectOption('DATE');
+    await page.locator('.modal input[type=date]').fill('2031-01-20');
+    await page.locator('.modal input[type=date]').dispatchEvent('change');
+    await page.waitForTimeout(300);
+    check('or with a date of my choosing', /Please pay by 20 Jan 2031/.test(await page.inputValue('.modal .rem-text')));
+    await page.locator('.modal label.field:has-text("Due date on this bill") select').selectOption('DAY');
+    await page.waitForTimeout(300);
     check('the bill dialog has no unlabelled button', await page.evaluate(() => [...document.querySelectorAll('.modal a.btn, .modal button')]
       .filter(b => !b.hidden && !b.textContent.trim() && !b.getAttribute('aria-label')).length) === 0);
     const wa = await page.getAttribute('.modal a.btn[href*="wa.me"]', 'href');
@@ -2138,6 +2150,23 @@ const run = async () => {
       const a = e.target.closest && e.target.closest('a[href^="https://wa.me"], a[href^="sms:"]');
       if (a) e.preventDefault();
     }, true));
+    // A tenant's payment says so on the receipt.
+    const zpay = await page.evaluate(async () => {
+      const db = await import('/core/db.js');
+      const z = (await db.q('v_flat_dues', b => b.eq('flat_number', 'Z-901')))[0];
+      const acct = (await db.q('accounts', b => b.eq('code', 'CASH')))[0];
+      const p = await db.rpc('record_payment', { p_flat: z.flat_id, p_amount: 100, p_date: new Date().toISOString().slice(0, 10),
+        p_method: 'CASH', p_account: acct.id, p_reference: null, p_notes: null, p_payer_name: z.billed_to });
+      return (Array.isArray(p) ? p[0] : p).id;
+    }).catch(e => null);
+    if (zpay){
+      await page.evaluate(id => import('/core/receipts.js').then(m => { m.receiptDialog(id); }), zpay);
+      await page.waitForSelector('.modal #receiptBody', { timeout: 6000 });
+      check('the receipt says who paid and as what', /Karim Tenant \(Tenant\)/.test(await page.textContent('.modal #receiptBody')),
+            (await page.textContent('.modal #receiptBody')).slice(0, 200));
+      await page.locator('.modal button:has-text("Done")').click();
+      await page.waitForTimeout(300);
+    } else check('a payment for Z-901 could be recorded', false);
     await gotoHash(page, '#/charges/payments');
     await page.locator('main tbody tr', { hasNotText: /reversed/i }).first().click();
     await page.waitForSelector('.modal #receiptBody', { timeout: 6000 });
@@ -2146,7 +2175,7 @@ const run = async () => {
     await page.waitForFunction(() => [...document.querySelectorAll('.modal .slip-preview img')].some(i => i.naturalWidth > 0));
     const opts = await page.evaluate(() => [...document.querySelectorAll('.modal .slip-actions .btn')].map(b => b.textContent.trim()));
     check('the receipt preview shows the picture with every way to send it',
-          ['Send picture', 'Download picture', 'PDF', 'Print'].every(t => opts.includes(t)) && opts.some(t => /WhatsApp/.test(t)), opts.join(' | '));
+          ['Share picture', 'Download picture', 'PDF', 'Print'].every(t => opts.includes(t)) && opts.some(t => /WhatsApp/.test(t)), opts.join(' | '));
     const [png] = await Promise.all([page.waitForEvent('download', { timeout: 15000 }), page.click('.modal .slip-actions button:has-text("Download picture")')]);
     const pbuf = fs.readFileSync(await png.path());
     check('Download picture saves the stamped receipt as a PNG', pbuf[0] === 0x89 && /\.png$/.test(png.suggestedFilename()), png.suggestedFilename());
