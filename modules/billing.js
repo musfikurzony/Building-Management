@@ -264,14 +264,31 @@ export function billMessage(payer, y, m, lang, tplOverride){
       parts.push(`${Number(f.this_month) > 0 ? '   + ' : label + ' — '}${lang === 'bn' ? 'পূর্বের বকেয়া' : 'earlier dues'}: ${tk(f.previous_due)}`);
     return parts.join('\n');
   }).filter(Boolean).join('\n');
-  const tpl = tplOverride ?? ((lang === 'bn' ? s.bill_template_bn : s.bill_template_en) || '');
+  let tpl = tplOverride ?? ((lang === 'bn' ? s.bill_template_bn : s.bill_template_en) || '');
+  // "No due date": the line asking for payment by a date is left out.
+  const due = billDue(payer);
+  if (!due) tpl = tpl.split('\n').filter(l => !l.includes('{due_date}')).join('\n');
   return fillTemplate(tpl, {
     name: payer.name || (lang === 'bn' ? 'মহোদয়/মহোদয়া' : 'Sir/Madam'),
     month, lines, total: amountText(payer.total, lang),
-    due_date: dateText(payer.due_date, lang), building: s.building_name || '',
+    due_date: due ? dateText(due, lang) : '', building: s.building_name || '',
     how_to_pay: s.reminder_how_to_pay || '',
     flats: payer.flats.map(f => f.flat_number).join(', ')
   });
+}
+
+/* The due date on a bill: the building's due day (normally the 10th), a
+   date chosen for this payer, or none at all — for a flat not ready yet,
+   or an owner not living there, who should simply be told the monthly
+   amount. The choice is remembered per payer on this device. */
+const DUE_KEY = (id) => `bms.billDue.${id || 'none'}`;
+function savedDue(id){ try { return JSON.parse(localStorage.getItem(DUE_KEY(id)) || 'null'); } catch { return null; } }
+function saveDue(id, v){ try { localStorage.setItem(DUE_KEY(id), JSON.stringify(v)); } catch {} }
+/** The date to print, or null for "no due date". */
+export function billDue(payer){
+  if (payer.dueMode === 'NONE') return null;
+  if (payer.dueMode === 'DATE' && payer.dueDate) return payer.dueDate;
+  return payer.due_date;
 }
 
 /** month_bills rows → one entry per payer. */
@@ -382,6 +399,20 @@ export async function billsView(query){
 
 async function billDialog(payer, y, m, { queue = false } = {}){
   const s = settings();
+  const remembered = savedDue(payer.id) || {};
+  payer = { ...payer, dueMode: remembered.mode || 'DAY', dueDate: remembered.date || '' };
+  const role = payer.flats[0]?.payer_relation === 'TENANT' ? 'Tenant' : payer.flats[0]?.payer_relation === 'OWNER' ? 'Owner' : '';
+  const billTo = payer.name ? (role ? `${payer.name} (${role})` : payer.name) : '';
+  const dueI = select([
+    { value:'DAY',  label:`Pay by ${fdate(payer.due_date)} (the usual due day)` },
+    { value:'DATE', label:'Pay by a date I choose' },
+    { value:'NONE', label:'No due date — just the monthly amount' }], { value: payer.dueMode });
+  const dateI = el('input', { type:'date', value: payer.dueDate || payer.due_date || '' });
+  const dateBox = field('Pay by', dateI);
+  const dueSpan = el('span', { class:'muted' });
+  const duePara = el('p', {}, el('span', { class:'muted', text:'Total payable ' }), el('b', { class:'num', text: money(payer.total) }), dueSpan);
+  const paintDue = () => { const d = billDue(payer); dueSpan.textContent = d ? ` by ${fdate(d)}` : ' — no due date'; };
+  dateBox.hidden = payer.dueMode !== 'DATE'; paintDue();
   let digits = null;
   if (payer.mobile){ try { digits = await rpc('normalize_mobile', { p: payer.mobile }, { silent:true }); } catch {} }
   const langI = select([{ value:'en', label:'English' }, { value:'bn', label:'বাংলা' }], { value: s.reminder_language || 'en' });
@@ -397,6 +428,13 @@ async function billDialog(payer, y, m, { queue = false } = {}){
     sms.textContent = 'Send as SMS'; sms.hidden = !digits;
   };
   const write = () => { text.value = billMessage(payer, y, m, langI.value); sync(); };
+  const syncDue = () => {
+    payer.dueMode = dueI.value; payer.dueDate = dateI.value;
+    dateBox.hidden = dueI.value !== 'DATE';
+    saveDue(payer.id, { mode: payer.dueMode, date: payer.dueDate });
+    write(); paintDue();
+  };
+  dueI.onchange = syncDue; dateI.onchange = syncDue;
   text.oninput = sync; langI.onchange = write; write();
 
   let closeDialog = null, sent = false;
@@ -445,12 +483,13 @@ async function billDialog(payer, y, m, { queue = false } = {}){
   const drawBill = () => receiptImage({
       building: s.building_name || 'Building', address: s.address || '',
       title: `Service charge bill — ${monthName(y, m)}`, noLabel: 'Bill for', receiptNo: monthName(y, m),
-      date: '', flat: payer.flats.map(f => f.flat_number).join(', '), from: payer.name || '', fromLabel: 'Bill to',
+      date: '', flat: payer.flats.map(f => f.flat_number).join(', '), from: billTo, fromLabel: 'Bill to',
       lines: billLines,
       amountLabel: owes ? 'Total payable' : 'Paid', amount: money(owes ? payer.total : paidShown),
-      note: owes ? `Please pay by ${fdate(payer.due_date)}` : 'Nothing left to pay — thank you.',
+      note: !owes ? 'Nothing left to pay — thank you.'
+            : billDue(payer) ? `Please pay by ${fdate(billDue(payer))}` : `Monthly service charge for ${monthName(y, m)}`,
       footer: s.reminder_how_to_pay ? String(s.reminder_how_to_pay).slice(0, 70) : 'Thank you.',
-      seal: owes ? { text:'DUE', sub:`By ${fdate(payer.due_date)}`, top: s.building_name || '', color:'red' }
+      seal: owes ? { text:'DUE', sub: billDue(payer) ? `By ${fdate(billDue(payer))}` : monthName(y, m), top: s.building_name || '', color:'red' }
                  : { text:'PAID', sub: monthName(y, m), top: s.building_name || '', color:'green' }
     });
   const billFile = `bill-${y}-${String(m).padStart(2,'0')}-${(payer.name || 'payer').replace(/\W+/g, '-')}`;
@@ -461,17 +500,17 @@ async function billDialog(payer, y, m, { queue = false } = {}){
   };
   const preview = el('button', { class:'btn primary', type:'button', text:'Preview & send', onclick: () => slipPreview({
     title:`Bill — ${payer.name || ''} — ${monthName(y, m)}`, draw: drawBill, fileBase: billFile, shareText: billCaption,
-    digits, text: text.value, note: `Goes to ${payer.name || 'the payer'}${payer.mobile ? ' · ' + payer.mobile : ''}.`,
+    digits, text: text.value, toName: payer.name, note: `Goes to ${billTo || 'the payer'}${payer.mobile ? ' · ' + payer.mobile : ''}.`,
     onSent: (ch) => record(ch === 'DOWNLOAD' ? 'IMAGE' : ch) }) });
   const canSend = can('charges', 'add');
   if (!canSend){ wa.hidden = true; sms.hidden = true; copy.hidden = true; img.hidden = true; preview.hidden = true; }
   wa.classList.remove('primary');
   const body = el('div', { class:'rem' },
-    el('div', { class:'rem-who' }, el('p', {}, el('span', { class:'muted', text:'To ' }), el('b', { text: payer.name || '' }),
+    el('div', { class:'rem-who' }, el('p', {}, el('span', { class:'muted', text:'To ' }), el('b', { text: billTo }),
       payer.mobile ? el('span', { class:'mono', text:` · ${payer.mobile}` }) : null),
       !digits ? el('p', { class:'warn-line', text:'No WhatsApp-ready number on file; WhatsApp will ask whom to send to.' }) : null),
-    el('p', {}, el('span', { class:'muted', text:'Total payable ' }), el('b', { class:'num', text: money(payer.total) }),
-      el('span', { class:'muted', text:` by ${fdate(payer.due_date)}` })),
+    duePara,
+    el('div', { class:'grid g-form' }, field('Due date on this bill', dueI), dateBox),
     field('Language', langI),
     field('Bill', text, { hint:'Written from Settings → Monthly bill message. You can change anything before sending.' }),
     el('div', { class:'btn-row' }, preview, wa, sms, img, copy));
